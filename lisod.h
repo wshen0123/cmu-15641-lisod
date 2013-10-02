@@ -10,10 +10,9 @@
 #ifdef DEBUG
   #define TIMEOUT 100
 #else
-  #define TIMEOUT 10
+  #define TIMEOUT 5
 #endif
 
-#define BACKLOG 10
 #define INET_IPLEN INET6_ADDRSTRLEN
 #define INET_PORTLEN 10
 #define LISOD_MAXLEN 4096
@@ -66,11 +65,8 @@ struct global_var
   client_t *client_curr;
   client_t *clients[FD_SETSIZE];
   int maxi;		        /* highwater index into client array */
+  ssize_t nclients;             /* max number of concurrent cliens */
+  ssize_t maxclients;
 } G;
 
-int lisod_setup (char *cmd, char *http_port, char *https_port, 
-                      char *log_file_path, char *lock_file_path,
-                      char *www_folder_path, char *cgi_folder_path,
-                      char *private_key_path, char *certificate_path);
-int lisod_run ();
 #endif

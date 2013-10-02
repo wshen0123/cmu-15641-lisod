@@ -9,7 +9,8 @@ typedef struct
   /* private variable: only access by member function */
   char *bytes;
   ssize_t len;
-  ssize_t __len; /*internal bytes block size by malloc */
+  /*internal bytes block size by malloc */
+  ssize_t __len; 
 } fifo_t;
 
 fifo_t *fifo_init (ssize_t len_init);

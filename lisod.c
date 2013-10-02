@@ -23,47 +23,53 @@
 #include <time.h>
 #include <openssl/ssl.h>
 
-enum conn_type
-{
-  HTTP_SOCK = 0,
-  HTTPS_SOCK = 1,
-};
+#define BACKLOG 10
+#define MAXCLIENTS 100
 
-static void daemonize (const char *cmd);
-static int already_running ();
-client_t * client_new (int client_sock, const char *client_ip,
+static int lisod_setup (char *cmd, char *http_port, char *https_port, 
+                      char *log_file_path, char *lock_file_path,
+                      char *www_folder_path, char *cgi_folder_path,
+                      char *private_key_path, char *certificate_path,
+                      ssize_t maxclients);
+static int lisod_run ();
+static void lisod_shutdown (int sig);
+
+static client_t * client_new (int client_sock, const char *client_ip,
                        unsigned short client_port, unsigned short server_port);
-int client_add (int client_sock, const char *client_ip, unsigned short client_port,
+static int client_add (int client_sock, const char *client_ip, unsigned short client_port,
                 unsigned short server_port);
 static void client_close (client_t * client);
 
 static void on_accept ();
 static void on_ready ();
-static int on_sock_read ();
-static int on_pipe_read ();
+static int on_read_sock ();
+static int on_read_pipe ();
 static int on_write ();
 
 static void *get_in_addr (struct sockaddr *sa);
 static in_port_t get_in_port (struct sockaddr *sa);
 typedef void handler_t (int);
 static handler_t *Signal (int signum, handler_t * handler);
+
 static int open_sock (char *port);
 static int close_sock (int sock);
 
-static void lisod_shutdown (int sig);
+static void daemonize (const char *cmd);
+static int already_running ();
 static void check_timeout (int sig);
 
-int
+static int
 lisod_setup (char *cmd, char *http_port, char *https_port, char *log_file_path,
 	    char *lock_file_path, char *www_folder_path,
 	    char *cgi_folder_path, char *private_key_path,
-	    char *certificate_path)
+	    char *certificate_path, ssize_t maxclients)
 {
   int i;
 
   G.lock_file_path = lock_file_path;
   G.www_folder_path = www_folder_path;
   G.cgi_folder_path = cgi_folder_path;
+  G.maxclients = maxclients;
 
   if (already_running (cmd))
     {
@@ -203,6 +209,8 @@ on_accept (int server_sock)
   /* accept client conncetion */
 
   G.n_ready--;
+  if (G.nclients >= G.maxclients)
+    return;
 
   if ((client_sock =
        accept (server_sock, (struct sockaddr *) &client_addr, &cli_size)) == -1)
@@ -245,7 +253,7 @@ on_ready ()
       if (FD_ISSET (client_sock, &G.read_ready_set))
 	{
 	  G.n_ready--;
-	  if (on_sock_read () < 0)
+	  if (on_read_sock () < 0)
             {
               G.clients[i] = NULL;
               continue;
@@ -255,7 +263,7 @@ on_ready ()
 	{
 	  if (FD_ISSET (client_pipe, &G.read_ready_set))
 	    G.n_ready--;
-	  if (on_pipe_read () < 0)
+	  if (on_read_pipe () < 0)
             {
               G.clients[i] = NULL;
               continue;
@@ -275,7 +283,7 @@ on_ready ()
 }				/*  end of on_ready */
 
 int
-on_sock_read ()
+on_read_sock ()
 {
   int cgi_pipe_fd;
   char buf[LISOD_MAXLEN];
@@ -333,10 +341,10 @@ on_sock_read ()
       client_close(client);
       return -1;
     }
-}				/* end of on_sock_read */
+}				/* end of on_read_sock */
 
 int
-on_pipe_read ()
+on_read_pipe ()
 {
   char buf[LISOD_MAXLEN];
   ssize_t readret;
@@ -442,6 +450,7 @@ client_add (int client_sock, const char *client_ip, unsigned short client_port,
 	    G.maxfd = client_sock;
 	  if (i > G.maxi)
 	    G.maxi = i;
+          G.nclients++;
 	  break;
 	}
     }
@@ -541,6 +550,7 @@ client_close (client_t * client)
   fifo_free (client->send_buf);
   http_handle_free (client->http_handle);
   free (client);
+  G.nclients--;
 }				/* end of client_new & client_exit */
 
 void
@@ -766,8 +776,6 @@ get_in_port (struct sockaddr *sa)
   return (((struct sockaddr_in6 *) sa)->sin6_port);
 }
 
-
-
 int
 main (int argc, char *argv[])
 {
@@ -782,7 +790,7 @@ main (int argc, char *argv[])
 
   if (lisod_setup
       (argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7],
-       argv[8]))
+       argv[8], MAXCLIENTS))
     return -1;
 
 

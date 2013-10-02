@@ -27,7 +27,7 @@ static const int MAXLEN = 1000;
 #define HTTP_CGI_MAX_ENVP    30
 #define HTTP_CGI_ENVP_MAXLEN 1000
 
-#define IS_STATIC(uri) 1
+static char *HTTP_NULL = "";
 
 typedef struct
 {
@@ -164,7 +164,7 @@ http_parse (http_handle_t * hh,
             char *request, 
             ssize_t req_len)
 {
-  char c, *buf;
+  char c, *buf, *mbuf;
   const char *p, *pe;
   ssize_t to_read, nread, nread_body, buf_index;
   enum http_state state;
@@ -278,7 +278,19 @@ http_parse (http_handle_t * hh,
 
 	case s_message_body:
 	  if (!hh->request.message_body)
-	    hh->request.message_body = malloc (hh->request.content_length);
+            {
+              mbuf = malloc (hh->request.content_length);
+              if (mbuf)
+                {
+                  hh->request.message_body = mbuf;
+                }
+              else
+                {
+                  hh->status = sc_500_server_internal_error;
+                  state = s_dead;
+                  log(hh->log, "ERROR", "malloc: %s", strerror(errno));
+                }
+            }
 
 	  to_read = MIN (pe - p, hh->request.content_length - nread_body);
 
@@ -763,7 +775,7 @@ make_string (const char *str)
   int len = strlen (str) + 1;
   char *newstr = (char *) malloc (len);
   if (newstr == NULL)
-    return NULL;
+    return HTTP_NULL;
   else
     {
       strcpy (newstr, str);
