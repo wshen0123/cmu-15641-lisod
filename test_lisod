@@ -1,0 +1,1 @@
+valgrind --track-origins=yes -v --leak-check=yes ./lisod 8080 4443 /tmp/lisod.log /tmp/lisod.lock /home/wshen1/www/ /home/wshen1/www/cgi/ /home/wshen1/priv.key /home/wshen1/cert.crt
