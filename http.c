@@ -464,6 +464,8 @@ http_do_response_static (http_handle_t *hh, fifo_t * send_buf)
   sprintf (buf, HTTP_RESPONSE_OK, date, file_size, file_type);
 
   p = fifo_extend (send_buf, strlen (buf) + file_size);
+  if (!p)
+    return -1;
   memcpy (p, buf, strlen (buf));
   memcpy (p + strlen (buf), file_data, file_size);
 
@@ -505,7 +507,8 @@ http_do_response_error (http_handle_t *hh, fifo_t * send_buf)
 	   "text/html");
   strcat (buf, buf_body);
 
-  fifo_in (send_buf, buf, strlen (buf));
+  if (fifo_in (send_buf, buf, strlen (buf)) < 0)
+    return -1;
 
   return 0;
 }

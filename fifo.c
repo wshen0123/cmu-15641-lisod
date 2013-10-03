@@ -3,20 +3,29 @@
 #include "fifo.h"
 
 fifo_t *
-fifo_init (ssize_t len_init)
+fifo_init (size_t len_init)
 {
-  ssize_t __len_temp;
+  size_t size_temp;
 
   if (len_init > 0)
-    __len_temp = (len_init / FIFO_BLOCKLEN + 1) * FIFO_BLOCKLEN;
+    size_temp = (len_init / FIFO_BLOCKLEN + 1) * FIFO_BLOCKLEN;
   else
-    __len_temp = FIFO_BLOCKLEN;
+    size_temp = FIFO_BLOCKLEN;
 
-  fifo_t *fifo = malloc (sizeof (fifo_t));
-  fifo->bytes = malloc (__len_temp);
-  fifo->__len = __len_temp;
-  fifo->len = 0;
-  return fifo;
+  fifo_t *f = malloc (sizeof (fifo_t));
+  if (!f)
+      return NULL;
+
+  f->bytes = malloc (size_temp);
+  if (!f->bytes)
+    {
+      free (f);
+      return NULL;
+    }
+
+  f->size = size_temp;
+  f->len = 0;
+  return f;
 }
 
 char *
@@ -26,69 +35,93 @@ fifo_head (fifo_t * fifo)
 }
 
 
-ssize_t
+size_t
 fifo_len (fifo_t * fifo)
 {
   return fifo->len;
+
 }
 
 
-void
-fifo_in (fifo_t * fifo, char *data, ssize_t data_len)
+int
+fifo_in (fifo_t * fifo, char *in_data, size_t in_len)
 {
   char *bytes_temp;
-  ssize_t __len_temp;
+  ssize_t size_temp;
 
-  if (data_len > 0)
+  if (in_len > 0)
     {
-      if (fifo->len + data_len > fifo->__len)
+      if (fifo->len + in_len > fifo->size)
 	{
-	  __len_temp =
-	    ((fifo->len + data_len) / FIFO_BLOCKLEN + 1) * FIFO_BLOCKLEN;
-	  bytes_temp = malloc (__len_temp);
+	  size_temp =
+	    ((fifo->len + in_len) / FIFO_BLOCKLEN + 1) * FIFO_BLOCKLEN;
+
+	  bytes_temp = malloc (size_temp);
+          if (!bytes_temp)
+            return -1;
 
 	  memcpy (bytes_temp, fifo->bytes, fifo->len);
-	  memcpy (bytes_temp + fifo->len, data, data_len);
+	  memcpy (bytes_temp + fifo->len, in_data, in_len);
 	  free (fifo->bytes);
 
 	  fifo->bytes = bytes_temp;
-	  fifo->len += data_len;
-	  fifo->__len = __len_temp;
+	  fifo->len += in_len;
+	  fifo->size = size_temp;
+
+          return 0;
 	}
       else
 	{
-	  memcpy (fifo->bytes + fifo->len, data, data_len);
-	  fifo->len += data_len;
+	  memcpy (fifo->bytes + fifo->len, in_data, in_len);
+	  fifo->len += in_len;
+
+          return 0;
 	}
     }
+  return 0;
 }
 
 
 void
-fifo_out (fifo_t * fifo, ssize_t pop_len)
+fifo_out (fifo_t * fifo, size_t pop_len)
 {
   char *bytes_temp;
-  ssize_t __len_temp;
+  ssize_t size_temp;
+
   if (pop_len >= fifo->len)
     {
-      if (fifo->__len > FIFO_BLOCKLEN)
-	{
-	  free (fifo->bytes);
-	  fifo->bytes = malloc (FIFO_BLOCKLEN);
-	}
       fifo->len = 0;
+      if (fifo->size > FIFO_BLOCKLEN)
+	{
+	  bytes_temp = malloc (FIFO_BLOCKLEN);
+          if (!fifo->bytes)
+            return;
+	  free (fifo->bytes);
+          fifo->bytes = bytes_temp;
+          fifo->size = FIFO_BLOCKLEN;
+    	}
     }
   else if (pop_len > 0)
     {
-      __len_temp =
+      size_temp =
 	((fifo->len - pop_len) / FIFO_BLOCKLEN + 1) * FIFO_BLOCKLEN;
-      if (__len_temp < (fifo->__len / 2))
+
+      if (size_temp < (fifo->size / 2))
 	{
-	  bytes_temp = malloc (__len_temp);
-	  memcpy (bytes_temp, fifo->bytes + pop_len, fifo->len - pop_len);
-	  free (fifo->bytes);
-	  fifo->bytes = bytes_temp;
-	  fifo->__len = __len_temp;
+	  bytes_temp = malloc (size_temp);
+          if (!bytes_temp) /* we cannot get more tmp mem, keep it as best */
+            {
+              memcpy (bytes_temp, fifo->bytes + pop_len, fifo->len - pop_len);
+	      fifo->len = fifo->len - pop_len;
+            }
+          else
+            {
+              memcpy (bytes_temp, fifo->bytes + pop_len, fifo->len - pop_len);
+	      free (fifo->bytes);
+	      fifo->bytes = bytes_temp;
+	      fifo->len = fifo->len - pop_len;
+	      fifo->size = size_temp;
+            }
 	}
       else
 	{
@@ -100,24 +133,28 @@ fifo_out (fifo_t * fifo, ssize_t pop_len)
 
 
 char *
-fifo_extend (fifo_t * fifo, ssize_t ext_len)
+fifo_extend (fifo_t * fifo, size_t ext_len)
 {
   char *bytes_temp;
-  ssize_t __len_temp;
+  ssize_t size_temp;
 
   if (ext_len > 0)
     {
-      if (fifo->__len - fifo->len < ext_len)
+      if (fifo->size < fifo->len + ext_len)
 	{
-	  __len_temp =
+	  size_temp =
 	    ((ext_len + fifo->len) / FIFO_BLOCKLEN + 1) * FIFO_BLOCKLEN;
-	  bytes_temp = malloc (__len_temp);
+
+	  bytes_temp = malloc (size_temp);
+          if (!bytes_temp)
+            return NULL;
+
 	  memcpy (bytes_temp, fifo->bytes, fifo->len);
 	  free (fifo->bytes);
 	  fifo->bytes = bytes_temp;
 	  bytes_temp += fifo->len;
 	  fifo->len += ext_len;
-	  fifo->__len = __len_temp;
+	  fifo->size = size_temp;
 	}
       else
 	{

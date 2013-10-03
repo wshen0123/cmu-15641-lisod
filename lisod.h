@@ -15,7 +15,7 @@
 
 #define INET_IPLEN INET6_ADDRSTRLEN
 #define INET_PORTLEN 10
-#define LISOD_MAXLEN 4096
+#define LISOD_MAXLEN 0x1000
 
 typedef struct
 {

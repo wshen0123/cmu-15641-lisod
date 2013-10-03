@@ -314,7 +314,12 @@ on_read_sock ()
 	}
       else			/* buffer unparsed request bytes */
 	{
-	  fifo_in (client->recv_buf, buf + nparsed, readret - nparsed);
+	  if (fifo_in (client->recv_buf, buf + nparsed, readret - nparsed) < 0)
+            {
+              log (G.log, "ERROR", "fifo_in error");
+              client_close(client);
+              return -1;
+            }
 	}
       if (cgi_pipe_fd >= 0)	/* got cgi pipe as response: dynamic content */
 	{
@@ -356,7 +361,12 @@ on_read_pipe ()
 
   if (readret > 0)
     {
-      fifo_in (client->send_buf, buf, readret);
+      if (fifo_in (client->send_buf, buf, readret) < 0)
+        {
+          client_close(client);
+          log (G.log, "ERROR", "fifo_in error");
+          return -1;
+        }
       return 0;
     }
   else if (readret == 0)	/* job finished */
@@ -439,7 +449,8 @@ client_add (int client_sock, const char *client_ip, unsigned short client_port,
     {
       if (!G.clients[i])
 	{
-	  if (!(G.clients[i] = client_new (client_sock, client_ip, client_port, server_port)))
+          G.clients[i] = client_new (client_sock, client_ip, client_port, server_port);
+	  if (!G.clients[i])
 	    {
 	      log (G.log, "ERROR", "client_new:%s", strerror (errno));
 	      return -1;
@@ -503,8 +514,22 @@ client_new (int client_sock, const char *client_ip, unsigned short client_port,
 
   strcpy (client->ip, client_ip);
   client->port = client_port;
+
   client->recv_buf = fifo_init (0);
+  if (!client->recv_buf)
+    {
+      log(G.log, "ERROR", "fifo_init error");
+      free(client);
+      return NULL;
+    }
   client->send_buf = fifo_init (0);
+  if (!client->send_buf)
+    {
+      log(G.log, "ERROR", "fifo_init error");
+      free(client);
+      return NULL;
+    }
+
   client->flush_close = 0;
   time (&client->last_activity);
 
