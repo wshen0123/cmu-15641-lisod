@@ -24,6 +24,7 @@ typedef struct
 
   int has_job;        /* ensure next job won't run until current finishes */
   int pipe_fd;
+  int cgi_pid;
 
   char ip[INET_IPLEN];
   unsigned short port;

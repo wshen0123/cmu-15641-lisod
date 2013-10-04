@@ -40,6 +40,8 @@ enum http_status
   sc_501_not_implemented,
   sc_503_service_unavailable,
   sc_505_http_version_not_supported,
+
+  sc_999_unknown,
 };
 
 enum http_method
@@ -78,10 +80,10 @@ typedef struct
 #define HTTP_HEADER_NAME 0
 #define HTTP_HEADER_VALUE 1
   char *headers[HTTP_MAX_HEADER_NUM][2];
-  ssize_t nheader;
+  ssize_t num_headers;
 
-  ssize_t content_length;
   char *message_body;
+  ssize_t content_length;
 } http_request_t;
 
 typedef struct
@@ -115,7 +117,7 @@ typedef struct
 
 http_handle_t * http_handle_new (http_setting_t * setting);
 int http_handle_execute (http_handle_t *hh, char *request, ssize_t req_len,
-                         fifo_t *send_buf, int * pipe_fd);
+                         fifo_t *send_buf, int * pipe_fd, pid_t * cgi_pid);
 void http_handle_free (http_handle_t * hh);
 
 #endif

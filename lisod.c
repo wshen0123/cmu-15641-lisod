@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <signal.h>
 #include <time.h>
 #include <openssl/ssl.h>
@@ -26,18 +27,20 @@
 #define BACKLOG 10
 #define MAXCLIENTS 100
 
-static int lisod_setup (char *cmd, char *http_port, char *https_port, 
-                      char *log_file_path, char *lock_file_path,
-                      char *www_folder_path, char *cgi_folder_path,
-                      char *private_key_path, char *certificate_path,
-                      ssize_t maxclients);
+static int lisod_setup (char *cmd, char *http_port, char *https_port,
+			char *log_file_path, char *lock_file_path,
+			char *www_folder_path, char *cgi_folder_path,
+			char *private_key_path, char *certificate_path,
+			ssize_t maxclients);
 static int lisod_run ();
-static void lisod_shutdown (int sig);
+static void lisod_signal_handler (int sig);
 
-static client_t * client_new (int client_sock, const char *client_ip,
-                       unsigned short client_port, unsigned short server_port);
-static int client_add (int client_sock, const char *client_ip, unsigned short client_port,
-                unsigned short server_port);
+static client_t *client_new (int client_sock, const char *client_ip,
+			     unsigned short client_port,
+			     unsigned short server_port);
+static int client_add (int client_sock, const char *client_ip,
+		       unsigned short client_port,
+		       unsigned short server_port);
 static void client_close (client_t * client);
 
 static void on_accept ();
@@ -59,10 +62,10 @@ static int already_running ();
 static void check_timeout (int sig);
 
 static int
-lisod_setup (char *cmd, char *http_port, char *https_port, char *log_file_path,
-	    char *lock_file_path, char *www_folder_path,
-	    char *cgi_folder_path, char *private_key_path,
-	    char *certificate_path, ssize_t maxclients)
+lisod_setup (char *cmd, char *http_port, char *https_port,
+	     char *log_file_path, char *lock_file_path, char *www_folder_path,
+	     char *cgi_folder_path, char *private_key_path,
+	     char *certificate_path, ssize_t maxclients)
 {
   int i;
 
@@ -89,9 +92,9 @@ lisod_setup (char *cmd, char *http_port, char *https_port, char *log_file_path,
   if ((G.http_sock = open_sock (http_port)) < 0)
     {
       log (G.log, "ERROR", "open_sock(%s): %s", http_port, strerror (errno));
-      lisod_shutdown (0);
+      lisod_signal_handler (0);
     }
-  G.http_port = atoi(http_port);
+  G.http_port = atoi (http_port);
 
   /* init TLS sock */
   SSL_load_error_strings ();
@@ -100,28 +103,28 @@ lisod_setup (char *cmd, char *http_port, char *https_port, char *log_file_path,
   if ((G.ssl_context = SSL_CTX_new (TLSv1_server_method ())) == NULL)
     {
       log (G.log, "ERROR", "SSL_CTX_new: Error creating SSL context");
-      lisod_shutdown (0);
+      lisod_signal_handler (0);
     }
   if (SSL_CTX_use_PrivateKey_file (G.ssl_context, private_key_path,
 				   SSL_FILETYPE_PEM) == 0)
     {
       log (G.log, "ERROR",
 	   "SSL_CTX_use_PrivateKey_file: Error associating private key");
-      lisod_shutdown (0);
+      lisod_signal_handler (0);
     }
   if (SSL_CTX_use_certificate_file (G.ssl_context, certificate_path,
 				    SSL_FILETYPE_PEM) == 0)
     {
       log (G.log, "ERROR",
 	   "SSL_CTX_use_certificate_file: Error associating certificate");
-      lisod_shutdown (0);
+      lisod_signal_handler (SIGTERM);
     }
   if ((G.https_sock = open_sock (https_port)) < 0)
     {
       log (G.log, "ERROR", "open_sock(%s): %s", https_port, strerror (errno));
-      lisod_shutdown (0);
+      lisod_signal_handler (SIGTERM);
     }
-  G.https_port = atoi(https_port);
+  G.https_port = atoi (https_port);
 
   FD_ZERO (&G.read_set);
   FD_SET (G.http_sock, &G.read_set);
@@ -172,30 +175,47 @@ lisod_run ()
 	  break;
 	}
     }
-  lisod_shutdown (SIGINT);
+  lisod_signal_handler (SIGTERM);
   return EXIT_SUCCESS;
 }				/* end of lisod_run */
 
 void
-lisod_shutdown (int sig)
+lisod_signal_handler (int sig)
 {
   int i;
-  if (G.http_sock >= 0)
-    close_sock (G.http_sock);
-  if (G.https_sock >= 0)
-    close_sock (G.https_sock);
+  pid_t pid;
 
-  if (G.ssl_context)
-    SSL_CTX_free (G.ssl_context);
-  log (G.log, "INFO", "[lisod %9ld]: %s.", (long) getpid (), "SHUT DOWN");
-  log_exit (G.log);
-  remove (G.lock_file_path);
+  if (sig == SIGTERM || sig == SIGINT)
+    {
+      if (G.http_sock >= 0)
+	close_sock (G.http_sock);
+      if (G.https_sock >= 0)
+	close_sock (G.https_sock);
 
-  for (i = 0; i < FD_SETSIZE; i++)
-    client_close (G.clients[i]);
+      if (G.ssl_context)
+	SSL_CTX_free (G.ssl_context);
+      log (G.log, "INFO", "[lisod %9ld]: %s.", (long) getpid (), "SHUT DOWN");
+      log_exit (G.log);
+      remove (G.lock_file_path);
 
-  exit (EXIT_SUCCESS);
-}				/* end of lisod_shutdown */
+      for (i = 0; i < FD_SETSIZE; i++)
+	client_close (G.clients[i]);
+
+      exit (EXIT_SUCCESS);
+    }
+  else if (sig == SIGCHLD)
+    {
+      log (G.log, "INFO", "waitpid called");
+      do
+	{
+	  pid = waitpid (-1, NULL, 0);
+	}
+      while (pid > 0);
+
+      if (errno != ECHILD)
+	log (G.log, "ERROR", "waitpid error");
+    }
+}				/* end of lisod_signal_handler */
 
 void
 on_accept (int server_sock)
@@ -213,7 +233,8 @@ on_accept (int server_sock)
     return;
 
   if ((client_sock =
-       accept (server_sock, (struct sockaddr *) &client_addr, &cli_size)) == -1)
+       accept (server_sock, (struct sockaddr *) &client_addr,
+	       &cli_size)) == -1)
     {
       log (G.log, "ERROR", "accept: %s", strerror (errno));
       return;
@@ -221,14 +242,14 @@ on_accept (int server_sock)
   inet_ntop (client_addr.ss_family,
 	     get_in_addr ((struct sockaddr *) &client_addr),
 	     client_ip, sizeof (client_ip));
-  
+
   client_port = ntohs (get_in_port ((struct sockaddr *) &client_addr));
   log (G.log, "INFO", "[%s:%5d] connected", client_ip, client_port);
 
   /* add client(fd) to pool */
   server_port = (server_sock == G.http_sock ? G.http_port : G.https_port);
 
-  if (client_add(client_sock, client_ip, client_port, server_port))
+  if (client_add (client_sock, client_ip, client_port, server_port))
     {
       log (G.log, "ERROR", "client_add: client pool full");
       close_sock (client_sock);
@@ -254,29 +275,29 @@ on_ready ()
 	{
 	  G.n_ready--;
 	  if (on_read_sock () < 0)
-            {
-              G.clients[i] = NULL;
-              continue;
-            }
+	    {
+	      G.clients[i] = NULL;
+	      continue;
+	    }
 	}
       if (client_pipe >= 0)
 	{
 	  if (FD_ISSET (client_pipe, &G.read_ready_set))
 	    G.n_ready--;
 	  if (on_read_pipe () < 0)
-            {
-              G.clients[i] = NULL;
-              continue;
-            }
+	    {
+	      G.clients[i] = NULL;
+	      continue;
+	    }
 	}
       if (FD_ISSET (client_sock, &G.write_ready_set))
 	{
 	  G.n_ready--;
 	  if (on_write () < 0)
-            {
-              G.clients[i] = NULL;
-              continue;
-            }
+	    {
+	      G.clients[i] = NULL;
+	      continue;
+	    }
 	}
       continue;
     }
@@ -285,7 +306,7 @@ on_ready ()
 int
 on_read_sock ()
 {
-  int cgi_pipe_fd;
+  int cgi_pipe_fd, cgi_pid;
   char buf[LISOD_MAXLEN];
   ssize_t readret, nparsed;
   client_t *client;
@@ -304,28 +325,33 @@ on_read_sock ()
   if (readret > 0)
     {
       cgi_pipe_fd = -1;
-      nparsed = http_handle_execute(client->http_handle,
-                                    buf, readret, client->send_buf, &cgi_pipe_fd);
+      nparsed = http_handle_execute (client->http_handle,
+				     buf, readret, client->send_buf,
+				     &cgi_pipe_fd, &cgi_pid);
       if (nparsed < 0)
 	{
-	  log (G.log, "INFO", "[%s:%d] bad reqeust -> flush_close", client->ip, client->port);
-          client->flush_close = 1;
-          FD_CLR(client->sock_fd, &G.read_set); /* no recv but write to */
+	  log (G.log, "INFO", "[%s:%d] bad reqeust -> flush_close",
+	       client->ip, client->port);
+	  client->flush_close = 1;
+	  FD_CLR (client->sock_fd, &G.read_set);	/* no recv but write to */
 	}
       else			/* buffer unparsed request bytes */
 	{
-	  if (fifo_in (client->recv_buf, buf + nparsed, readret - nparsed) < 0)
-            {
-              log (G.log, "ERROR", "fifo_in error");
-              client_close(client);
-              return -1;
-            }
+	  if (fifo_in (client->recv_buf, buf + nparsed, readret - nparsed) <
+	      0)
+	    {
+	      log (G.log, "ERROR", "fifo_in error");
+	      client_close (client);
+	      return -1;
+	    }
 	}
       if (cgi_pipe_fd >= 0)	/* got cgi pipe as response: dynamic content */
 	{
 	  client->has_job = 1;
 	  client->pipe_fd = cgi_pipe_fd;
+	  client->cgi_pid = cgi_pid;
 	  FD_SET (cgi_pipe_fd, &G.read_set);
+          log (G.log, "INFO", "cgi[%d] fork", (int) client->cgi_pid);
 	}
       return 0;
     }
@@ -336,14 +362,14 @@ on_read_sock ()
   else if (readret == 0)
     {
       log (G.log, "INFO", "[%s:%d] closed", client->ip, client->port);
-      client_close(client);
+      client_close (client);
       return -1;
     }
   else
     {
       log (G.log, "INFO", "[%s:%d] read error %s", client->ip, client->port,
 	   strerror (errno));
-      client_close(client);
+      client_close (client);
       return -1;
     }
 }				/* end of on_read_sock */
@@ -362,15 +388,16 @@ on_read_pipe ()
   if (readret > 0)
     {
       if (fifo_in (client->send_buf, buf, readret) < 0)
-        {
-          client_close(client);
-          log (G.log, "ERROR", "fifo_in error");
-          return -1;
-        }
+	{
+	  client_close (client);
+	  log (G.log, "ERROR", "fifo_in error");
+	  return -1;
+	}
       return 0;
     }
   else if (readret == 0)	/* job finished */
     {
+      log (G.log, "INFO", "cgi[%d] exit", (int) client->cgi_pid);
       FD_CLR (client->pipe_fd, &G.read_set);
       close (client->pipe_fd);
       client->pipe_fd = -1;
@@ -384,7 +411,7 @@ on_read_pipe ()
   else
     {
       log (G.log, "INFO", "[pipe] read error %s", strerror (errno));
-      client_close(client);
+      client_close (client);
       return -1;
     }
 }
@@ -407,7 +434,7 @@ on_write ()
 
   if (client->ssl_context)
     writeret = SSL_write (client->ssl_context, fifo_head (client->send_buf),
-	       fifo_len (client->send_buf));
+			  fifo_len (client->send_buf));
   else
     writeret =
       send (client->sock_fd, fifo_head (client->send_buf),
@@ -415,16 +442,16 @@ on_write ()
 
   if (writeret >= 0)
     {
-      if (client->flush_close && writeret == fifo_len(client->send_buf))
-        {
-          client_close(client);
-          return -1;
-        }
+      if (client->flush_close && writeret == fifo_len (client->send_buf))
+	{
+	  client_close (client);
+	  return -1;
+	}
       else
-        {
-          fifo_out (client->send_buf, writeret);
-          return 0;
-        }
+	{
+	  fifo_out (client->send_buf, writeret);
+	  return 0;
+	}
     }
   else if (errno == EINTR)
     {
@@ -434,14 +461,14 @@ on_write ()
     {
       log (G.log, "INFO", "[%s:%d] write error %s", client->ip, client->port,
 	   strerror (errno));
-      client_close(client);
+      client_close (client);
       return -1;
     }
 }				/* end of on_write */
 
 int
-client_add (int client_sock, const char *client_ip, unsigned short client_port,
-            unsigned short server_port)
+client_add (int client_sock, const char *client_ip,
+	    unsigned short client_port, unsigned short server_port)
 {
   int i;
 
@@ -449,7 +476,8 @@ client_add (int client_sock, const char *client_ip, unsigned short client_port,
     {
       if (!G.clients[i])
 	{
-          G.clients[i] = client_new (client_sock, client_ip, client_port, server_port);
+	  G.clients[i] =
+	    client_new (client_sock, client_ip, client_port, server_port);
 	  if (!G.clients[i])
 	    {
 	      log (G.log, "ERROR", "client_new:%s", strerror (errno));
@@ -461,7 +489,7 @@ client_add (int client_sock, const char *client_ip, unsigned short client_port,
 	    G.maxfd = client_sock;
 	  if (i > G.maxi)
 	    G.maxi = i;
-          G.nclients++;
+	  G.nclients++;
 	  break;
 	}
     }
@@ -471,8 +499,8 @@ client_add (int client_sock, const char *client_ip, unsigned short client_port,
 }
 
 client_t *
-client_new (int client_sock, const char *client_ip, unsigned short client_port,
-            unsigned short server_port)
+client_new (int client_sock, const char *client_ip,
+	    unsigned short client_port, unsigned short server_port)
 {
   client_t *client;
   http_setting_t hh;
@@ -486,8 +514,7 @@ client_new (int client_sock, const char *client_ip, unsigned short client_port,
     {
       if ((client->ssl_context = SSL_new (G.ssl_context)) == NULL)
 	{
-	  log (G.log, "ERROR",
-	       "SSL_new: Error creating client SSL context");
+	  log (G.log, "ERROR", "SSL_new: Error creating client SSL context");
 	  goto ssl_error;
 	}
       if (SSL_set_fd (client->ssl_context, client_sock) == 0)
@@ -511,6 +538,7 @@ client_new (int client_sock, const char *client_ip, unsigned short client_port,
     }
   client->has_job = 0;
   client->pipe_fd = -1;
+  client->cgi_pid = -1;
 
   strcpy (client->ip, client_ip);
   client->port = client_port;
@@ -518,15 +546,15 @@ client_new (int client_sock, const char *client_ip, unsigned short client_port,
   client->recv_buf = fifo_init (0);
   if (!client->recv_buf)
     {
-      log(G.log, "ERROR", "fifo_init error");
-      free(client);
+      log (G.log, "ERROR", "fifo_init error");
+      free (client);
       return NULL;
     }
   client->send_buf = fifo_init (0);
   if (!client->send_buf)
     {
-      log(G.log, "ERROR", "fifo_init error");
-      free(client);
+      log (G.log, "ERROR", "fifo_init error");
+      free (client);
       return NULL;
     }
 
@@ -583,8 +611,9 @@ daemonize (const char *cmd)
 {
   Signal (SIGHUP, SIG_IGN);
   Signal (SIGPIPE, SIG_IGN);
-  Signal (SIGINT, lisod_shutdown);
-  Signal (SIGTERM, lisod_shutdown);
+  Signal (SIGINT, lisod_signal_handler);
+  Signal (SIGTERM, lisod_signal_handler);
+  Signal (SIGCHLD, lisod_signal_handler);
 
 #ifdef DEBUG
   return;
@@ -694,7 +723,7 @@ check_timeout (int sig)
 {
   int i;
   double time_gone;
-  client_t * client;
+  client_t *client;
 
   for (i = 0; i <= G.maxi; i++)
     {
