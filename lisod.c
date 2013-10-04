@@ -205,7 +205,6 @@ lisod_signal_handler (int sig)
     }
   else if (sig == SIGCHLD)
     {
-      log (G.log, "INFO", "waitpid called");
       do
 	{
 	  pid = waitpid (-1, NULL, 0);
