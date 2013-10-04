@@ -139,7 +139,7 @@ lisod_setup (char *cmd, char *http_port, char *https_port,
       G.clients[i] = NULL;
     }
 
-  log (G.log, "INFO", "[lisod %9ld] SETUP", (long) getpid ());
+  log (G.log, "INFO", "[lisod pid:%5ld] SETUP", (long) getpid ());
 
   Signal (SIGALRM, check_timeout);
   alarm (TIMEOUT);
@@ -194,7 +194,7 @@ lisod_signal_handler (int sig)
 
       if (G.ssl_context)
 	SSL_CTX_free (G.ssl_context);
-      log (G.log, "INFO", "[lisod %9ld]: %s.", (long) getpid (), "SHUT DOWN");
+      log (G.log, "INFO", "[lisod pid:%5ld] SHUTDOWN", (long) getpid ());
       log_exit (G.log);
       remove (G.lock_file_path);
 
@@ -243,7 +243,7 @@ on_accept (int server_sock)
 	     client_ip, sizeof (client_ip));
 
   client_port = ntohs (get_in_port ((struct sockaddr *) &client_addr));
-  log (G.log, "INFO", "[%s:%5d] connected", client_ip, client_port);
+  log (G.log, "INFO", "%s:%-5d - connected", client_ip, client_port);
 
   /* add client(fd) to pool */
   server_port = (server_sock == G.http_sock ? G.http_port : G.https_port);
@@ -329,7 +329,7 @@ on_read_sock ()
 				     &cgi_pipe_fd, &cgi_pid);
       if (nparsed < 0)
 	{
-	  log (G.log, "INFO", "[%s:%d] bad reqeust -> flush_close",
+	  log (G.log, "INFO", "%s:%-5d - bad reqeust -> flush_close",
 	       client->ip, client->port);
 	  client->flush_close = 1;
 	  FD_CLR (client->sock_fd, &G.read_set);	/* no recv but write to */
@@ -350,7 +350,6 @@ on_read_sock ()
 	  client->pipe_fd = cgi_pipe_fd;
 	  client->cgi_pid = cgi_pid;
 	  FD_SET (cgi_pipe_fd, &G.read_set);
-          log (G.log, "INFO", "cgi[%d] fork", (int) client->cgi_pid);
 	}
       return 0;
     }
@@ -360,13 +359,13 @@ on_read_sock ()
     }
   else if (readret == 0)
     {
-      log (G.log, "INFO", "[%s:%d] closed", client->ip, client->port);
+      log (G.log, "INFO", "%s:%-5d - closed", client->ip, client->port);
       client_close (client);
       return -1;
     }
   else
     {
-      log (G.log, "INFO", "[%s:%d] read error %s", client->ip, client->port,
+      log (G.log, "INFO", "%s:%-5d - read error %s", client->ip, client->port,
 	   strerror (errno));
       client_close (client);
       return -1;
@@ -396,7 +395,6 @@ on_read_pipe ()
     }
   else if (readret == 0)	/* job finished */
     {
-      log (G.log, "INFO", "cgi[%d] exit", (int) client->cgi_pid);
       FD_CLR (client->pipe_fd, &G.read_set);
       close (client->pipe_fd);
       client->pipe_fd = -1;
@@ -458,7 +456,7 @@ on_write ()
     }
   else
     {
-      log (G.log, "INFO", "[%s:%d] write error %s", client->ip, client->port,
+      log (G.log, "INFO", "%s:%-5d - write error %s", client->ip, client->port,
 	   strerror (errno));
       client_close (client);
       return -1;
@@ -735,7 +733,7 @@ check_timeout (int sig)
 
       if (time_gone > TIMEOUT)
 	{
-	  log (G.log, "INFO", "[%s:%d] timed out and force closed",
+	  log (G.log, "INFO", "%s:%-5d] timed out and force closed",
 	       client->ip, client->port);
 	  client_close (client);
 	  G.clients[i] = NULL;

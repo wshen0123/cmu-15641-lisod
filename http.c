@@ -38,6 +38,7 @@ typedef struct
 const http_status_code_reason_phase status_2_reason[] = {
   [sc_200_ok] = {200, "ok"},
   [sc_400_bad_request] = {400, "bad request"},
+  [sc_403_forbidden] = {403, "forbidden"},
   [sc_404_not_found] = {404, "not found"},
   [sc_411_length_required] = {411, "length required"},
   [sc_413_request_entity_too_large] = {413, "request entity too large"},
@@ -46,6 +47,8 @@ const http_status_code_reason_phase status_2_reason[] = {
   [sc_501_not_implemented] = {501, "not implemented"},
   [sc_503_service_unavailable] = {503, "service unavailable"},
   [sc_505_http_version_not_supported] = {505, "http version not supported"},
+
+  [sc_999_unknown] = {999, "Opps?!!! How do we get here :>=<:"},
 };
 
 int is_uri_static (const char *uri);
@@ -632,6 +635,7 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
   envp[index++] = make_string ("GATEWAY_INTERFACE=CGI/1.1");
   envp[index++] = make_string ("SERVER_PROTOCOL=HTTP/1.1");
   envp[index++] = make_string ("SERVER_SOFTWARE=Lisod/1.0");
+  envp[index++] = make_string ("SERVER_NAME=Wayne Lisod");
   sprintf (buf, "PATH_INFO=%s", path_info);
   envp[index++] = make_string (buf);
   sprintf (buf, "REQUEST_URI=%s", request_uri);
