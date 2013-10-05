@@ -497,7 +497,8 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
 
   sprintf (buf, HTTP_RESPONSE_OK, date, file_size, file_type);
 
-  if (hh->request.method == HTTP_METHOD_GET)
+  if (hh->request.method == HTTP_METHOD_GET
+      || hh->request.method == HTTP_METHOD_POST)
     {
       file_fd = open (file_path, O_RDONLY);
       file_data = mmap (0, file_size, PROT_READ, MAP_PRIVATE, file_fd, 0);
@@ -514,12 +515,17 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
       memcpy (p + strlen (buf), file_data, file_size);
       munmap(file_data, file_size);
     }
-  else
+  else if (hh->request.method == HTTP_METHOD_HEAD)
     {
       p = fifo_extend (send_buf, strlen (buf));
       if (!p)
         return -1;
       memcpy (p, buf, strlen (buf));
+    }
+  else
+    {
+      log(hh->log, "ERROR", "http method not implemented, how do we get here?");
+      return -1;
     }
 
   return 0;
