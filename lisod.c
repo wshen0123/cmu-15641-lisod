@@ -28,10 +28,10 @@
 #define MAXCLIENTS 100
 
 static int lisod_setup (char *cmd, char *http_port, char *https_port,
-			char *log_file_path, char *lock_file_path,
+			char *log_file_path, char *lock_file_fd_path,
 			char *www_folder_path, char *cgi_folder_path,
 			char *private_key_path, char *certificate_path,
-			ssize_t maxclients);
+			ssize_t max_num_client);
 static int lisod_run ();
 static void lisod_signal_handler (int sig);
 
@@ -44,7 +44,7 @@ static int client_add (int client_sock, const char *client_ip,
 static void client_close (client_t * client);
 
 static void on_accept ();
-static void on_ready ();
+static void onum_ready ();
 static int on_read_sock ();
 static int on_read_pipe ();
 static int on_write ();
@@ -65,14 +65,14 @@ static int
 lisod_setup (char *cmd, char *http_port, char *https_port,
 	     char *log_file_path, char *lock_file_path, char *www_folder_path,
 	     char *cgi_folder_path, char *private_key_path,
-	     char *certificate_path, ssize_t maxclients)
+	     char *certificate_path, ssize_t max_num_client)
 {
   int i;
 
   G.lock_file_path = lock_file_path;
   G.www_folder_path = www_folder_path;
   G.cgi_folder_path = cgi_folder_path;
-  G.maxclients = maxclients;
+  G.max_num_client = max_num_client;
 
   if (already_running (cmd))
     {
@@ -82,14 +82,16 @@ lisod_setup (char *cmd, char *http_port, char *https_port,
 
   daemonize (cmd);
 
-  if (!(G.log = log_init (log_file_path)))
+  G.log = log_init (log_file_path);
+  if (!G.log)
     {
       fprintf (stderr, "Error: init log\n");
       return EXIT_FAILURE;
     }
 
   /* init http sock */
-  if ((G.http_sock = open_sock (http_port)) < 0)
+  G.http_sock = open_sock (http_port);
+  if (G.http_sock < 0)
     {
       log (G.log, "ERROR", "open_sock(%s): %s", http_port, strerror (errno));
       lisod_signal_handler (0);
@@ -100,7 +102,8 @@ lisod_setup (char *cmd, char *http_port, char *https_port,
   SSL_load_error_strings ();
   SSL_library_init ();
 
-  if ((G.ssl_context = SSL_CTX_new (TLSv1_server_method ())) == NULL)
+  G.ssl_context = SSL_CTX_new (TLSv1_server_method ());
+  if (!G.ssl_context)
     {
       log (G.log, "ERROR", "SSL_CTX_new: Error creating SSL context");
       lisod_signal_handler (0);
@@ -119,7 +122,8 @@ lisod_setup (char *cmd, char *http_port, char *https_port,
 	   "SSL_CTX_use_certificate_file: Error associating certificate");
       lisod_signal_handler (SIGTERM);
     }
-  if ((G.https_sock = open_sock (https_port)) < 0)
+  G.https_sock = open_sock (https_port);
+  if (G.https_sock < 0)
     {
       log (G.log, "ERROR", "open_sock(%s): %s", https_port, strerror (errno));
       lisod_signal_handler (SIGTERM);
@@ -131,8 +135,8 @@ lisod_setup (char *cmd, char *http_port, char *https_port,
   FD_SET (G.https_sock, &G.read_set);
   FD_ZERO (&G.write_set);
 
-  G.maxfd = (G.http_sock > G.https_sock ? G.http_sock : G.https_sock);
-  G.n_ready = 0;
+  G.max_fd = (G.http_sock > G.https_sock ? G.http_sock : G.https_sock);
+  G.num_ready = 0;
   G.maxi = -1;
   for (i = 0; i < FD_SETSIZE; i++)
     {
@@ -154,16 +158,16 @@ lisod_run ()
     {
       G.read_ready_set = G.read_set;
       G.write_ready_set = G.write_set;
-      G.n_ready =
-	select (G.maxfd + 1, &G.read_ready_set,
+      G.num_ready =
+	select (G.max_fd + 1, &G.read_ready_set,
 		&G.write_ready_set, NULL, NULL);
-      if (G.n_ready > 0)
+      if (G.num_ready > 0)
 	{
 	  if (FD_ISSET (G.http_sock, &G.read_ready_set))
 	    on_accept (G.http_sock);
 	  if (FD_ISSET (G.https_sock, &G.read_ready_set))
 	    on_accept (G.https_sock);
-	  on_ready ();
+	  onum_ready ();
 	}
       else if (errno == EINTR)
 	{
@@ -214,7 +218,7 @@ lisod_signal_handler (int sig)
       if (errno != ECHILD)
 	log (G.log, "ERROR", "waitpid error");
     }
-}				/* end of lisod_signal_handler */
+} /* end of lisod_signal_handler */
 
 void
 on_accept (int server_sock)
@@ -227,13 +231,13 @@ on_accept (int server_sock)
 
   /* accept client conncetion */
 
-  G.n_ready--;
-  if (G.nclients >= G.maxclients)
+  G.num_ready--;
+  if (G.num_client >= G.max_num_client)
     return;
+  client_sock = accept (server_sock, (struct sockaddr *) &client_addr,
+                        &cli_size);
 
-  if ((client_sock =
-       accept (server_sock, (struct sockaddr *) &client_addr,
-	       &cli_size)) == -1)
+  if (client_sock < 0)
     {
       log (G.log, "ERROR", "accept: %s", strerror (errno));
       return;
@@ -248,7 +252,7 @@ on_accept (int server_sock)
   /* add client(fd) to pool */
   server_port = (server_sock == G.http_sock ? G.http_port : G.https_port);
 
-  if (client_add (client_sock, client_ip, client_port, server_port))
+  if (client_add (client_sock, client_ip, client_port, server_port) < 0)
     {
       log (G.log, "ERROR", "client_add: client pool full");
       close_sock (client_sock);
@@ -256,11 +260,11 @@ on_accept (int server_sock)
 }				/* end of on_accept */
 
 void
-on_ready ()
+onum_ready ()
 {
   int i, client_sock, client_pipe;
 
-  for (i = 0; (i <= G.maxi) && (G.n_ready > 0); i++)
+  for (i = 0; (i <= G.maxi) && (G.num_ready > 0); i++)
     {
       if (!G.clients[i])
 	continue;
@@ -272,7 +276,7 @@ on_ready ()
 
       if (FD_ISSET (client_sock, &G.read_ready_set))
 	{
-	  G.n_ready--;
+	  G.num_ready--;
 	  if (on_read_sock () < 0)
 	    {
 	      G.clients[i] = NULL;
@@ -282,7 +286,7 @@ on_ready ()
       if (client_pipe >= 0)
 	{
 	  if (FD_ISSET (client_pipe, &G.read_ready_set))
-	    G.n_ready--;
+	    G.num_ready--;
 	  if (on_read_pipe () < 0)
 	    {
 	      G.clients[i] = NULL;
@@ -291,7 +295,7 @@ on_ready ()
 	}
       if (FD_ISSET (client_sock, &G.write_ready_set))
 	{
-	  G.n_ready--;
+	  G.num_ready--;
 	  if (on_write () < 0)
 	    {
 	      G.clients[i] = NULL;
@@ -300,7 +304,7 @@ on_ready ()
 	}
       continue;
     }
-}				/*  end of on_ready */
+}				/*  end of onum_ready */
 
 int
 on_read_sock ()
@@ -325,7 +329,8 @@ on_read_sock ()
     {
       cgi_pipe_fd = -1;
       nparsed = http_handle_execute (client->http_handle,
-				     buf, readret, client->send_buf,
+				     buf, readret,
+                                     client->send_buf,
 				     &cgi_pipe_fd, &cgi_pid);
       if (nparsed < 0)
 	{
@@ -482,11 +487,11 @@ client_add (int client_sock, const char *client_ip,
 	    }
 	  FD_SET (client_sock, &G.read_set);
 	  FD_SET (client_sock, &G.write_set);
-	  if (client_sock > G.maxfd)
-	    G.maxfd = client_sock;
+	  if (client_sock > G.max_fd)
+	    G.max_fd = client_sock;
 	  if (i > G.maxi)
 	    G.maxi = i;
-	  G.nclients++;
+	  G.num_client++;
 	  break;
 	}
     }
@@ -509,7 +514,8 @@ client_new (int client_sock, const char *client_ip,
   client->sock_fd = client_sock;
   if (server_port == G.https_port)
     {
-      if ((client->ssl_context = SSL_new (G.ssl_context)) == NULL)
+      client->ssl_context = SSL_new (G.ssl_context);
+      if (!client->ssl_context)
 	{
 	  log (G.log, "ERROR", "SSL_new: Error creating client SSL context");
 	  goto ssl_error;
@@ -600,7 +606,7 @@ client_close (client_t * client)
   fifo_free (client->send_buf);
   http_handle_free (client->http_handle);
   free (client);
-  G.nclients--;
+  G.num_client--;
 }				/* end of client_new & client_exit */
 
 void
@@ -639,9 +645,9 @@ daemonize (const char *cmd)
   else if (pid != 0)		/* parent */
     exit (0);
 
-  ftruncate (G.lock_file, 0);
+  ftruncate (G.lock_file_fd, 0);
   sprintf (buf, "%ld", (long) getpid ());
-  write (G.lock_file, buf, strlen (buf) + 1);
+  write (G.lock_file_fd, buf, strlen (buf) + 1);
 
   /*
    * Change the current working directory to the root so
@@ -679,8 +685,8 @@ already_running ()
 #define LOCKMODE (S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH)
 
 #ifndef DEBUG
-  G.lock_file = open (G.lock_file_path, O_RDWR | O_CREAT | O_EXCL, LOCKMODE);
-  if (G.lock_file < 0)
+  G.lock_file_fd = open (G.lock_file_fd_path, O_RDWR | O_CREAT | O_EXCL, LOCKMODE);
+  if (G.lock_file_fd < 0)
     {
       fprintf (stderr, "Error: cannot create lock file\n");
       return -1;
@@ -766,15 +772,15 @@ open_sock (char *port)
 
   for (p = servinfo; p != NULL; p = p->ai_next)
     {
-      if ((sock =
-	   socket (p->ai_family, p->ai_socktype, p->ai_protocol)) == -1)
+      sock = socket (p->ai_family, p->ai_socktype, p->ai_protocol);
+      if (sock < 0)
 	continue;
 
       if (setsockopt (sock, SOL_SOCKET, SO_REUSEADDR, &yes,
-		      sizeof (int)) == -1)
+		      sizeof (int)) < 0)
 	return -1;
 
-      if (bind (sock, p->ai_addr, p->ai_addrlen) == -1)
+      if (bind (sock, p->ai_addr, p->ai_addrlen) < 0)
 	{
 	  close (sock);
 	  continue;
@@ -787,7 +793,7 @@ open_sock (char *port)
   if (p == NULL)
     return -1;
 
-  if (listen (sock, BACKLOG) == -1)
+  if (listen (sock, BACKLOG) < 0)
     {
       close (sock);
       return -1;
@@ -847,5 +853,5 @@ main (int argc, char *argv[])
 
   lisod_run ();
 
-  return 0;
+  return EXIT_FAILURE;
 }

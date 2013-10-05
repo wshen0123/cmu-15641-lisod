@@ -53,21 +53,21 @@ struct global_var
   SSL_CTX *ssl_context;
 
   log_t *log;
-  int lock_file;
+  int lock_file_fd;
 
   /* lisod client var */
-  ssize_t maxfd;
+  ssize_t max_fd;
   fd_set read_set;		/* set of all active read descriptors */
   fd_set read_ready_set;	/* set of descriptors ready to read */
   fd_set write_set;		/* set of all active write descriptors */
   fd_set write_ready_set;	/* set of descriptors ready for write */
-  int n_ready;			/* number of descriptors ready */
+  int num_ready;		/* number of descriptors ready */
 
   client_t *client_curr;
   client_t *clients[FD_SETSIZE];
   int maxi;		        /* highwater index into client array */
-  ssize_t nclients;             /* max number of concurrent cliens */
-  ssize_t maxclients;
+  ssize_t num_client;             /* max number of concurrent cliens */
+  ssize_t max_num_client;
 } G;
 
 #endif

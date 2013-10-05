@@ -170,6 +170,7 @@ fifo_free (fifo_t * fifo)
 {
   if (!fifo)
     return;
+
   if (fifo->bytes)
     free (fifo->bytes);
   free (fifo);

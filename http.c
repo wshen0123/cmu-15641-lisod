@@ -27,6 +27,15 @@ static const int MAXLEN = 1000;
 #define HTTP_CGI_MAX_ENVP    30
 #define HTTP_CGI_ENVP_MAXLEN 1000
 
+
+enum http_uri_type
+{
+  HTTP_URI_STATIC = 0,
+  HTTP_URI_DYNAMIC = 1,
+
+  HTTP_URI_INVALID, /* contain invalid token */
+}; 
+
 static char *HTTP_NULL = "";
 
 typedef struct
@@ -51,7 +60,7 @@ const http_status_code_reason_phase status_2_reason[] = {
   [sc_999_unknown] = {999, "Opps?!!! How do we get here :>=<:"},
 };
 
-int is_uri_static (const char *uri);
+enum http_uri_type check_uri_type (const char *uri);
 int parse_uri_static (http_handle_t * hh, char *file_path);
 int parse_uri_dynamic (http_handle_t * hh, char *path_info, char *request_uri,
 		       char *query_string, char *script_name);
@@ -100,7 +109,7 @@ http_handle_new (http_setting_t * setting)
   return hh;
 }
 
-int
+ssize_t
 http_handle_execute (http_handle_t * hh, char *request, ssize_t req_len,
 		     fifo_t * send_buf, int *pipe_fd, pid_t * cgi_pid)
 {
@@ -136,8 +145,8 @@ void
 http_parser_reset (http_parser_t * parser)
 {
   parser->state = s_start;
-  parser->nread = 0;
-  parser->nread_body = 0;
+  parser->header_len = 0;
+  parser->body_len = 0;
   memset(parser->buf, 0, sizeof(parser->buf));
   parser->buf_index = 0;
 }
@@ -171,19 +180,7 @@ http_request_reset (http_request_t * request)
 void
 http_handle_free (http_handle_t * hh)
 {
-  while (hh->request.num_headers-- > 0)
-    {
-      free (hh->request.headers[hh->request.num_headers][HTTP_HEADER_NAME]);
-      free (hh->request.headers[hh->request.num_headers][HTTP_HEADER_VALUE]);
-    }
-  if (hh->request.uri)
-    {
-      free (hh->request.uri);
-    }
-  if (hh->request.message_body)
-    {
-      free (hh->request.message_body);
-    }
+  http_request_reset (&hh->request);
   free (hh);
 }
 
@@ -193,14 +190,14 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 {
   char c, *buf, *mbuf;
   const char *p, *pe;
-  ssize_t to_read, nread, nread_body, buf_index;
+  size_t to_read, header_len, body_len, buf_index;
   enum http_state state;
   http_parser_t *parser;
 
   parser = &hh->parser;
   state = parser->state;
-  nread = parser->nread;
-  nread_body = parser->nread_body;
+  header_len = parser->header_len;
+  body_len = parser->body_len;
   buf = parser->buf;
   buf_index = parser->buf_index;
 
@@ -209,8 +206,8 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
       c = *p;
       if (PARSING_HEADER (state))
 	{
-	  nread++;
-	  if (nread > HTTP_MAX_HEADER_SIZE)
+	  header_len++;
+	  if (header_len > HTTP_MAX_HEADER_SIZE)
 	    {
 	      state = s_dead;
 	      hh->status = sc_413_request_entity_too_large;
@@ -318,15 +315,15 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 		}
 	    }
 
-	  to_read = MIN (pe - p, hh->request.content_length - nread_body);
+	  to_read = MIN (pe - p, hh->request.content_length - body_len);
 
 	  if (to_read > 0)
 	    {
 	      memcpy (hh->request.message_body, p, to_read);
-	      nread_body += to_read;
+	      body_len += to_read;
 	      p += to_read;
 	    }
-	  if (nread_body == hh->request.content_length)
+	  if (body_len == hh->request.content_length)
 	    {
 	      state = s_done;
 	    }
@@ -341,7 +338,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	break;
     }				/* end of for */
   parser->state = state;
-  parser->nread = nread;
+  parser->header_len = header_len;
   parser->buf_index = buf_index;
 
   return p - request;
@@ -432,13 +429,27 @@ int
 http_do_response (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
 		  pid_t * cgi_pid)
 {
+  enum http_uri_type uri_type;
+
   if (ERROR_STATUS (hh->status))
     return http_do_response_error (hh, send_buf);
 
-  if (is_uri_static (hh->request.uri))
-    return http_do_response_static (hh, send_buf);
-  else
-    return http_do_response_dynamic (hh, send_buf, pipe_fd, cgi_pid);
+  uri_type = check_uri_type(hh->request.uri);
+
+  switch(uri_type) {
+    case HTTP_URI_STATIC:
+      return http_do_response_static (hh, send_buf);
+      break;
+    case HTTP_URI_DYNAMIC:
+      return http_do_response_dynamic (hh, send_buf, pipe_fd, cgi_pid);
+      break;
+    case HTTP_URI_INVALID:
+      hh->status = sc_403_forbidden;
+      return http_do_response_error (hh, send_buf);
+      break;
+    default:
+      break;
+  }
 
   return 0;
 }
@@ -454,7 +465,7 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
   char buf[HTTP_MAX_HEADER_SIZE],
     file_path[MAXLEN], file_type[MAXLEN], date[MAXLEN], *file_data, *p;
   int file_fd;
-  ssize_t file_size;
+  size_t file_size;
   struct stat sbuf;
   time_t now;
   struct tm tm;
@@ -484,22 +495,32 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
   file_size = sbuf.st_size;
   get_file_type (file_path, file_type);
 
-  file_fd = open (file_path, O_RDONLY);
-  file_data = mmap (0, file_size, PROT_READ, MAP_PRIVATE, file_fd, 0);
-  close (file_fd);
-  if (!file_data)
-    {
-      hh->status = sc_500_server_internal_error;
-      return http_do_response_error (hh, send_buf);
-    }
-
   sprintf (buf, HTTP_RESPONSE_OK, date, file_size, file_type);
 
-  p = fifo_extend (send_buf, strlen (buf) + file_size);
-  if (!p)
-    return -1;
-  memcpy (p, buf, strlen (buf));
-  memcpy (p + strlen (buf), file_data, file_size);
+  if (hh->request.method == HTTP_METHOD_GET)
+    {
+      file_fd = open (file_path, O_RDONLY);
+      file_data = mmap (0, file_size, PROT_READ, MAP_PRIVATE, file_fd, 0);
+      close (file_fd);
+      if (!file_data)
+        {
+          hh->status = sc_500_server_internal_error;
+          return http_do_response_error (hh, send_buf);
+        }
+      p = fifo_extend (send_buf, strlen (buf) + file_size);
+      if (!p)
+        return -1;
+      memcpy (p, buf, strlen (buf));
+      memcpy (p + strlen (buf), file_data, file_size);
+      munmap(file_data, file_size);
+    }
+  else
+    {
+      p = fifo_extend (send_buf, strlen (buf));
+      if (!p)
+        return -1;
+      memcpy (p, buf, strlen (buf));
+    }
 
   return 0;
 }
@@ -520,7 +541,7 @@ http_do_response_error (http_handle_t * hh, fifo_t * send_buf)
 
   char buf[MAXLEN], buf_body[MAXLEN], date[MAXLEN], *reason;
   int code;
-  ssize_t content_length;
+  size_t content_length;
   time_t now;
   struct tm tm;
 
@@ -551,6 +572,7 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
 			  pid_t * cgi_pid)
 {
   pid_t pid;
+  int write_ret;
   int stdin_pipe[2];
   int stdout_pipe[2];
   char *ARGV[HTTP_CGI_MAX_ARGV];
@@ -568,6 +590,9 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
       return http_do_response_error (hh, send_buf);
     }
 
+  build_envp (hh, ENVP, path_info, request_uri, query_string,
+		  script_name);
+
   if (pipe (stdin_pipe) < 0)
     return -1;
   if (pipe (stdout_pipe) < 0)
@@ -584,8 +609,6 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
   if (pid == 0)
     {
       /* note we put those envp here to avoid leaking lisod memory */
-      build_envp (hh, ENVP, path_info, request_uri, query_string,
-		  script_name);
       close (stdout_pipe[0]);
       close (stdin_pipe[1]);
       dup2 (stdout_pipe[1], fileno (stdout));
@@ -600,6 +623,7 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
       if (execve (ARGV[0], ARGV, ENVP))
 	{
 	  log (hh->log, "ERROR", "execve: %s", strerror (errno));
+          //TODO add do_http_response_error
 	  exit (EXIT_FAILURE);
 	}
     }
@@ -608,10 +632,11 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
       close (stdout_pipe[1]);
       close (stdin_pipe[0]);
 
-      if (write
-	  (stdin_pipe[1], hh->request.message_body,
-	   hh->request.content_length) < 0)
+      write_ret = write (stdin_pipe[1], hh->request.message_body,
+                         hh->request.content_length);
+      if (write_ret < 0)
 	return -1;
+
 
       close (stdin_pipe[1]);
       *pipe_fd = stdout_pipe[0];
@@ -676,49 +701,49 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
 	  sprintf (buf, "CONTENT_TYPE=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "HTTP-ACCEPT"))
+      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "ACCEPT"))
 	{
 	  sprintf (buf, "HTTP_ACCEPT=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "HTTP-REFERER"))
+      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "REFERER"))
 	{
 	  sprintf (buf, "HTTP_REFERER=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "HTTP-ACCEPT-ENCODING"))
+      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "ACCEPT-ENCODING"))
 	{
 	  sprintf (buf, "HTTP_ACCEPT_ENCODING=%s",
 		   headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "HTTP-ACCPET-LANGUAGE"))
+      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "ACCPET-LANGUAGE"))
 	{
 	  sprintf (buf, "HTTP_ACCEPT_LANGUAGE=%s",
 		   headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "HTTP-ACCEPT-CHARSET"))
+      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "ACCEPT-CHARSET"))
 	{
 	  sprintf (buf, "HTTP_ACCEPT_CHARSET=%s",
 		   headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "HTTP-COOKIE"))
+      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "COOKIE"))
 	{
 	  sprintf (buf, "HTTP_COOKIE=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "HTTP-USER-AGENT"))
+      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "USER-AGENT"))
 	{
 	  sprintf (buf, "HTTP_USER_AGENT=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "HTTP-CONNECTION"))
+      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "CONNECTION"))
 	{
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "HTTP-HOST"))
+      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "HOST"))
 	{
 	  sprintf (buf, "HTTP_HOST=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
@@ -727,10 +752,16 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
 }
 
 
-int
-is_uri_static (const char *uri)
+enum http_uri_type
+check_uri_type (const char *uri)
 {
-  return strncmp (uri, "/cgi/", 5);
+  if (strstr(uri, ".."))
+    return HTTP_URI_INVALID;
+
+  if (strncmp (uri, "/cgi/", 5))
+    return HTTP_URI_STATIC;
+  else
+    return HTTP_URI_DYNAMIC;
 }
 
 

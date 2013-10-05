@@ -59,18 +59,23 @@ enum http_version
   HTTP_VERSION_1_1,
 };
 
+/* http_parser: stream parser FSM holder,
+ * only called by http_parser_execute/reset */
 typedef struct
 {
   enum http_state state;
 
-  ssize_t nread;
-  ssize_t nread_body;
+  size_t header_len;
+  size_t body_len;
 
   char buf[HTTP_MAX_HEADER_SIZE];       /* used to hold uri/port/path/query string */
-  ssize_t buf_index;
+  size_t buf_index;
 
 } http_parser_t;
 
+/* http_reques_t: filled by parser_execute
+ * and accessed by http_do_response, contain
+ * info necessary to contruct response */
 typedef struct
 {
   enum http_method method;
@@ -80,15 +85,19 @@ typedef struct
 #define HTTP_HEADER_NAME 0
 #define HTTP_HEADER_VALUE 1
   char *headers[HTTP_MAX_HEADER_NUM][2];
-  ssize_t num_headers;
+  size_t num_headers;
 
   char *message_body;
-  ssize_t content_length;
+  size_t content_length;
 } http_request_t;
 
+/* http_handle_t: this is the handle hold by lisod
+ * but none of the members shall be accessed public
+ * they are self contained and only used by http
+ * module functtions */
 typedef struct
 {
-  /* env var ( shallow copy: don't free them! ) */
+  /* setup var ( shallow copy: don't free them! ) */
   const char *www_folder_path;
   const char *cgi_folder_path;
   const char *client_ip;
@@ -103,6 +112,8 @@ typedef struct
 
 } http_handle_t;
 
+/* http_setting_t: struct to pass http setting to
+ * http handler */
 typedef struct
 {
   const char *www_folder_path;
@@ -116,7 +127,7 @@ typedef struct
 } http_setting_t;
 
 http_handle_t * http_handle_new (http_setting_t * setting);
-int http_handle_execute (http_handle_t *hh, char *request, ssize_t req_len,
+ssize_t http_handle_execute (http_handle_t *hh, char *request, ssize_t req_len,
                          fifo_t *send_buf, int * pipe_fd, pid_t * cgi_pid);
 void http_handle_free (http_handle_t * hh);
 
