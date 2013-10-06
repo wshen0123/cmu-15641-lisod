@@ -45,8 +45,8 @@ struct global_var
 {
   /* command line argument */
   char *lock_file_path;
-  char *www_folder_path;
-  char *cgi_folder_path;
+  char *www_folder;
+  char *cgi_path;
 
   /* lisod system var */
   unsigned short http_port;

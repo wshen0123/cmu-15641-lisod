@@ -102,8 +102,8 @@ http_handle_new (http_setting_t * setting)
 
   memset (hh, 0, sizeof (http_handle_t));	/* member defaults to 0 */
 
-  hh->www_folder_path = setting->www_folder_path;
-  hh->cgi_folder_path = setting->cgi_folder_path;
+  hh->www_folder = setting->www_folder;
+  hh->cgi_path = setting->cgi_path;
   hh->client_ip = setting->client_ip;
   hh->client_port = setting->client_port;
   hh->server_port = setting->server_port;
@@ -599,8 +599,6 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
     request_uri[HTTP_CGI_ENVP_MAXLEN],
     query_string[HTTP_CGI_ENVP_MAXLEN], script_name[HTTP_CGI_ENVP_MAXLEN];
 
-  ARGV[0] = "./cgi";
-  ARGV[1] = NULL;
 
   if (parse_uri_dynamic
       (hh, path_info, request_uri, query_string, script_name))
@@ -632,11 +630,8 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
       dup2 (stdout_pipe[1], fileno (stdout));
       dup2 (stdin_pipe[0], fileno (stdin));
 
-      if (chdir (hh->cgi_folder_path) < 0)
-	{
-	  log (hh->log, "ERROR", "chdir: %s", strerror (errno));
-	  exit (EXIT_FAILURE);
-	}
+      ARGV[0] = make_string(hh->cgi_path);
+      ARGV[1] = NULL;
 
       if (execve (ARGV[0], ARGV, ENVP))
 	{
@@ -823,7 +818,7 @@ parse_uri_static (http_handle_t * hh, char *file_path)
 
   uri = hh->request.uri;
 
-  strcpy (file_path, hh->www_folder_path);
+  strcpy (file_path, hh->www_folder);
 
   if (uri[strlen (uri) - 1] == '/')
     {

@@ -100,8 +100,8 @@ typedef struct
 typedef struct
 {
   /* setup var ( shallow copy: don't free them! ) */
-  const char *www_folder_path;
-  const char *cgi_folder_path;
+  const char *www_folder;
+  const char *cgi_path;
   const char *client_ip;
   unsigned short client_port;
   unsigned short server_port;
@@ -118,8 +118,8 @@ typedef struct
  * http handler */
 typedef struct
 {
-  const char *www_folder_path;
-  const char *cgi_folder_path;
+  const char *www_folder;
+  const char *cgi_path;
 
   const char *client_ip;
   unsigned short client_port;

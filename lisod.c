@@ -46,7 +46,7 @@ static const char SERVER_ERROR_MSG[] =
 
 static int lisod_setup (char *cmd, char *http_port, char *https_port,
 			char *log_file_path, char *lock_file_fd_path,
-			char *www_folder_path, char *cgi_folder_path,
+			char *www_folder, char *cgi_path,
 			char *private_key_path, char *certificate_path);
 static int lisod_run ();
 static void lisod_signal_handler (int sig);
@@ -82,14 +82,14 @@ static int
 lisod_setup (char *cmd,
 	     char *http_port, char *https_port,
 	     char *log_file_path, char *lock_file_path,
-	     char *www_folder_path, char *cgi_folder_path,
+	     char *www_folder, char *cgi_path,
 	     char *private_key_path, char *certificate_path)
 {
   int i;
 
   G.lock_file_path = lock_file_path;
-  G.www_folder_path = www_folder_path;
-  G.cgi_folder_path = cgi_folder_path;
+  G.www_folder = www_folder;
+  G.cgi_path = cgi_path;
 
   if (already_running (cmd))
     {
@@ -619,8 +619,8 @@ client_new (int client_sock, const char *client_ip,
   client->flush_close = false;
   time (&client->last_activity);
 
-  hh.www_folder_path = G.www_folder_path;
-  hh.cgi_folder_path = G.cgi_folder_path;
+  hh.www_folder = G.www_folder;
+  hh.cgi_path = G.cgi_path;
   hh.client_ip = client->ip;
   hh.client_port = client_port;
   hh.server_port = server_port;

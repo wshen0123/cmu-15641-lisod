@@ -85,8 +85,6 @@ def add_entry():
 def login():
     error = None
     if request.method == 'POST':
-        out_file = open('log.txt', 'w+')
-        out_file.write(str(os.environ.items()))
         if request.form['username'] != app.config['USERNAME']:
             error = 'Invalid username'
         elif request.form['password'] != app.config['PASSWORD']:
