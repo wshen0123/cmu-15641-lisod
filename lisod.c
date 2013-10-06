@@ -30,23 +30,20 @@ static const char SERVER_ERROR_MSG[] =
   "HTTP/1.1 500 Internal Server Error\r\n"
   "Server: Lisod 1.0\r\n"
   "Vary: Accept-Encoding\r\n"
-  "Content-Encoding: gzip\r\n"
-  "Content-Length: 475\r\n"
+  //"Content-Encoding: gzip\r\n"
+  "Content-Length: 479\r\n"
   "Connection: close\r\n"
   "Content-Type: text/html; charset=iso-8859-1\r\n\r\n"
   "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">"
-  "<html><head>"
-  "<title>500 Internal Server Error</title>"
-  "</head><body>"
+  "<html>"
+  "<head><title>500 Internal Server Error</title></head>"
+  "<body>"
   "<h1>Internal Server Error</h1>"
-  "<p>The server encountered an internal error or"
-  "misconfiguration and was unable to complete"
-  "your request.</p>"
-  "<p>Please contact the server administrator,"
-  " webmaster@localhost and inform them of the time the error occurred,"
-  "and anything you might have done that may have"
-  "caused the error.</p>"
-  "<hr><address>Lisod 1.0</address></body></html>";
+  "<p>The server encountered an internal error or misconfiguration "
+  "and was unable to complete your request.</p><p>Please contact the "
+  "server administrator, webmaster@localhost and inform them of the "
+  "time the error occurred, and anything you might have done that may "
+  "have caused the error.</p><hr><address>Lisod 1.0</address></body></html>";
 
 
 static int lisod_setup (char *cmd, char *http_port, char *https_port,
@@ -255,8 +252,9 @@ on_SIGCHLD ()
       client = client_find_by_cgi_pid (pid);
       if (client)
 	{
+          log (G.log, "INFO", "cgi(pid:%ld) exit(%d)", (long) getpid (), WEXITSTATUS(status));
           fifo_in(client->send_buf, SERVER_ERROR_MSG, strlen(SERVER_ERROR_MSG));
-	  FD_CLR (client->sock_fd, &G.read_set);	/* no recv but write to */
+	  FD_CLR (client->sock_fd, &G.read_set);
 	  client->flush_close = true;
 	}
     }
@@ -386,7 +384,7 @@ on_read_sock ()
 				     &cgi_pipe, &cgi_pid);
       if (nparsed < 0)
 	{
-	  log (G.log, "INFO", "%s:%-5d - bad reqeust -> flush_close",
+	  log (G.log, "INFO", "%s:%-5d - bad reqeust, will flush_close",
 	       client->ip, client->port);
 	  client->flush_close = true;
 	  FD_CLR (client->sock_fd, &G.read_set);	/* no recv but write to */
@@ -503,6 +501,7 @@ on_write ()
       fifo_out (client->send_buf, writeret);
       if (client->flush_close && (fifo_len (client->send_buf) == 0))
 	{
+          log (G.log, "INFO", "%s:%-5d - flushed & closed", client->ip, client->port);
 	  client_close (client);
 	  return -1;
 	}
