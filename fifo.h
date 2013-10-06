@@ -17,7 +17,7 @@ fifo_t *fifo_init (size_t len_init);
 char *fifo_head (fifo_t * fifo);
 size_t fifo_len (fifo_t * fifo);
 void fifo_free (fifo_t * fifo);
-int fifo_in (fifo_t * fifo, char *data, size_t data_len);
+int fifo_in (fifo_t * fifo, const char *data, size_t data_len);
 void fifo_out (fifo_t * fifo, size_t pop_len);
 char *fifo_extend (fifo_t * fifo, size_t ext_len);
 

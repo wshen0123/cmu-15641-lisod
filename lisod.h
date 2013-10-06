@@ -25,7 +25,7 @@ typedef struct
   SSL *ssl_context;
 
   bool has_job;        /* ensure next job won't run until current finishes */
-  int pipe_fd;
+  int cgi_pipe;
   int cgi_pid;
 
   char ip[INET_IPLEN];
@@ -69,8 +69,6 @@ struct global_var
   client_t *client_curr;
   client_t *clients[FD_SETSIZE];
   int maxi;		        /* highwater index into client array */
-  ssize_t num_client;             /* max number of concurrent cliens */
-  ssize_t max_num_client;
 } G;
 
 #endif

@@ -138,14 +138,27 @@ http_handle_execute (http_handle_t * hh, char *request, ssize_t req_len,
 void
 http_handle_reset (http_handle_t * hh)
 {
+  if (!hh)
+    return;
   http_parser_reset(&hh->parser);
   http_request_reset(&hh->request);
   hh->status = sc_last;
 }
 
 void
+http_handle_free (http_handle_t * hh)
+{
+  if (!hh)
+    return;
+  http_request_reset (&hh->request);
+  free (hh);
+}
+
+void
 http_parser_reset (http_parser_t * parser)
 {
+  if (!parser)
+    return;
   parser->state = s_start;
   parser->header_len = 0;
   parser->body_len = 0;
@@ -179,12 +192,6 @@ http_request_reset (http_request_t * request)
 }
 
 
-void
-http_handle_free (http_handle_t * hh)
-{
-  http_request_reset (&hh->request);
-  free (hh);
-}
 
 
 ssize_t
@@ -659,7 +666,7 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
   return 0;
 }
 
-void http_pipe_finish_call_back (fifo_t *send_buf, fifo_t *pipe_buf)
+void http_cgi_finish_callback (fifo_t *send_buf, fifo_t *pipe_buf)
 {
   static const char HTTP_RESPONSE_LINE[] = "HTTP/1.1 %d %s\r\n";
   static const size_t STATUS_LINE_MINLEN = 11;

@@ -44,7 +44,7 @@ fifo_len (fifo_t * fifo)
 
 
 int
-fifo_in (fifo_t * fifo, char *in_data, size_t in_len)
+fifo_in (fifo_t * fifo, const char *in_data, size_t in_len)
 {
   char *bytes_temp;
   ssize_t size_temp;
