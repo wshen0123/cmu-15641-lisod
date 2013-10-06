@@ -397,7 +397,7 @@ on_read_pipe ()
     }
   else if (readret == 0)	/* job finished */
     {
-      http_cgi_status_parse(client->send_buf, client->pipe_buf);
+      http_pipe_finish_call_back(client->send_buf, client->pipe_buf);
       fifo_out (client->pipe_buf, fifo_len(client->pipe_buf));
 
       FD_CLR (client->pipe_fd, &G.read_set);

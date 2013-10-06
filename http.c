@@ -659,7 +659,7 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
   return 0;
 }
 
-void http_cgi_status_parse (fifo_t *send_buf, fifo_t *pipe_buf)
+void http_pipe_finish_call_back (fifo_t *send_buf, fifo_t *pipe_buf)
 {
   static const char HTTP_RESPONSE_LINE[] = "HTTP/1.1 %d %s\r\n";
   static const size_t STATUS_LINE_MINLEN = 11;
