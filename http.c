@@ -33,8 +33,8 @@ enum http_uri_type
   HTTP_URI_STATIC = 0,
   HTTP_URI_DYNAMIC = 1,
 
-  HTTP_URI_INVALID, /* contain invalid token */
-}; 
+  HTTP_URI_INVALID,		/* contain invalid token */
+};
 
 static char *HTTP_NULL = "";
 
@@ -74,11 +74,12 @@ static int http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf,
 				     int *pipe_fd, int *pid);
 static int http_do_response_error (http_handle_t * hh, fifo_t * send_buf);
 
-ssize_t http_parser_execute (http_handle_t * h, char *request, ssize_t req_len);
-enum http_status http_parser_request_line  (http_request_t * req,
+ssize_t http_parser_execute (http_handle_t * h, char *request,
+			     ssize_t req_len);
+enum http_status http_parser_request_line (http_request_t * req,
+					   const char *buf);
+enum http_status http_parser_header_line (http_request_t * req,
 					  const char *buf);
-enum http_status http_parser_header_line  (http_request_t * req,
-					 const char *buf);
 
 static void http_handle_reset (http_handle_t * h);
 void http_parser_reset (http_parser_t * parser);
@@ -140,8 +141,8 @@ http_handle_reset (http_handle_t * hh)
 {
   if (!hh)
     return;
-  http_parser_reset(&hh->parser);
-  http_request_reset(&hh->request);
+  http_parser_reset (&hh->parser);
+  http_request_reset (&hh->request);
   hh->status = sc_last;
 }
 
@@ -162,7 +163,7 @@ http_parser_reset (http_parser_t * parser)
   parser->state = s_start;
   parser->header_len = 0;
   parser->body_len = 0;
-  memset(parser->buf, 0, sizeof(parser->buf));
+  memset (parser->buf, 0, sizeof (parser->buf));
   parser->buf_index = 0;
 }
 
@@ -170,7 +171,7 @@ void
 http_request_reset (http_request_t * request)
 {
   int i;
-  
+
   for (i = 0; i < request->num_headers; i++)
     {
       free (request->headers[i][HTTP_HEADER_NAME]);
@@ -234,7 +235,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	      break;
 	    }
 	  buf[buf_index] = '\0';
-	  hh->status = http_parser_request_line  (&hh->request, buf);
+	  hh->status = http_parser_request_line (&hh->request, buf);
 	  if (ERROR_STATUS (hh->status))
 	    state = s_dead;
 	  else
@@ -262,7 +263,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	  buf[buf_index] = '\0';
 	  if (buf_index > 0)
 	    {
-	      hh->status = http_parser_header_line  (&hh->request, buf);
+	      hh->status = http_parser_header_line (&hh->request, buf);
 	      if (ERROR_STATUS (hh->status))
 		state = s_dead;
 	      else
@@ -355,7 +356,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 
 
 enum http_status
-http_parser_request_line  (http_request_t * req, const char *buf)
+http_parser_request_line (http_request_t * req, const char *buf)
 {
   char method[HTTP_MAX_HEADER_SIZE], uri[HTTP_MAX_HEADER_SIZE],
     version[HTTP_MAX_HEADER_SIZE];
@@ -390,7 +391,7 @@ http_parser_request_line  (http_request_t * req, const char *buf)
 }
 
 enum http_status
-http_parser_header_line  (http_request_t * req, const char *buf)
+http_parser_header_line (http_request_t * req, const char *buf)
 {
   const char *p;
   char *cp;
@@ -443,9 +444,10 @@ http_do_response (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
   if (ERROR_STATUS (hh->status))
     return http_do_response_error (hh, send_buf);
 
-  uri_type = check_uri_type(hh->request.uri);
+  uri_type = check_uri_type (hh->request.uri);
 
-  switch(uri_type) {
+  switch (uri_type)
+    {
     case HTTP_URI_STATIC:
       return http_do_response_static (hh, send_buf);
       break;
@@ -458,7 +460,7 @@ http_do_response (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
       break;
     default:
       break;
-  }
+    }
 
   return 0;
 }
@@ -513,27 +515,28 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
       file_data = mmap (0, file_size, PROT_READ, MAP_PRIVATE, file_fd, 0);
       close (file_fd);
       if (!file_data)
-        {
-          hh->status = sc_500_server_internal_error;
-          return http_do_response_error (hh, send_buf);
-        }
+	{
+	  hh->status = sc_500_server_internal_error;
+	  return http_do_response_error (hh, send_buf);
+	}
       p = fifo_extend (send_buf, strlen (buf) + file_size);
       if (!p)
-        return -1;
+	return -1;
       memcpy (p, buf, strlen (buf));
       memcpy (p + strlen (buf), file_data, file_size);
-      munmap(file_data, file_size);
+      munmap (file_data, file_size);
     }
   else if (hh->request.method == HTTP_METHOD_HEAD)
     {
       p = fifo_extend (send_buf, strlen (buf));
       if (!p)
-        return -1;
+	return -1;
       memcpy (p, buf, strlen (buf));
     }
   else
     {
-      log(hh->log, "ERROR", "http method not implemented, how do we get here?");
+      log (hh->log, "ERROR",
+	   "http method not implemented, how do we get here?");
       return -1;
     }
 
@@ -606,8 +609,7 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
       return http_do_response_error (hh, send_buf);
     }
 
-  build_envp (hh, ENVP, path_info, request_uri, query_string,
-		  script_name);
+  build_envp (hh, ENVP, path_info, request_uri, query_string, script_name);
 
   if (pipe (stdin_pipe) < 0)
     return -1;
@@ -639,7 +641,7 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
       if (execve (ARGV[0], ARGV, ENVP))
 	{
 	  log (hh->log, "ERROR", "execve: %s", strerror (errno));
-          //TODO add do_http_response_error
+	  //TODO add do_http_response_error
 	  exit (EXIT_FAILURE);
 	}
     }
@@ -649,12 +651,12 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
       close (stdin_pipe[0]);
 
       if (hh->request.method == HTTP_METHOD_POST)
-        {
-          write_ret = write (stdin_pipe[1], hh->request.message_body,
-                            hh->request.content_length);
-          if (write_ret < 0)
-            return -1;
-        }
+	{
+	  write_ret = write (stdin_pipe[1], hh->request.message_body,
+			     hh->request.content_length);
+	  if (write_ret < 0)
+	    return -1;
+	}
 
       close (stdin_pipe[1]);
       *pipe_fd = stdout_pipe[0];
@@ -666,33 +668,34 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
   return 0;
 }
 
-void http_cgi_finish_callback (fifo_t *send_buf, fifo_t *pipe_buf)
+void
+http_cgi_finish_callback (fifo_t * send_buf, fifo_t * pipe_buf)
 {
   static const char HTTP_RESPONSE_LINE[] = "HTTP/1.1 %d %s\r\n";
   static const size_t STATUS_LINE_MINLEN = 11;
-  
+
   int i, status_code;
   char *cp, *reason_phrase, response_line[MAXLEN];
 
-  cp = fifo_head(pipe_buf);
+  cp = fifo_head (pipe_buf);
 
-  if (fifo_len (pipe_buf) > STATUS_LINE_MINLEN 
-      && !strncasecmp(cp, "status: ", strlen("status: ")))
+  if (fifo_len (pipe_buf) > STATUS_LINE_MINLEN
+      && !strncasecmp (cp, "status: ", strlen ("status: ")))
     {
-      cp += strlen("status: ");
-      status_code = atoi(cp);
+      cp += strlen ("status: ");
+      status_code = atoi (cp);
       for (i = 0; i < sc_last - 1; i++)
-        {
-          if (status_2_reason[i].status_code == status_code)
-            {
-              reason_phrase = status_2_reason[i].reason_phrase;
-              break;
-            }
-        }
-      sprintf(response_line, HTTP_RESPONSE_LINE, status_code, reason_phrase);
-      fifo_in(send_buf, response_line, strlen(response_line));
+	{
+	  if (status_2_reason[i].status_code == status_code)
+	    {
+	      reason_phrase = status_2_reason[i].reason_phrase;
+	      break;
+	    }
+	}
+      sprintf (response_line, HTTP_RESPONSE_LINE, status_code, reason_phrase);
+      fifo_in (send_buf, response_line, strlen (response_line));
     }
-  fifo_in(send_buf, fifo_head(pipe_buf), fifo_len(pipe_buf));
+  fifo_in (send_buf, fifo_head (pipe_buf), fifo_len (pipe_buf));
 }
 
 void
@@ -803,7 +806,7 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
 enum http_uri_type
 check_uri_type (const char *uri)
 {
-  if (strstr(uri, ".."))
+  if (strstr (uri, ".."))
     return HTTP_URI_INVALID;
 
   if (strncmp (uri, "/cgi/", 5))

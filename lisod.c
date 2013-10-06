@@ -28,9 +28,7 @@ static const int BACKLOG = 10;
 static const int MAXCLIENTS = 100;
 static const char SERVER_ERROR_MSG[] =
   "HTTP/1.1 500 Internal Server Error\r\n"
-  "Server: Lisod 1.0\r\n"
-  "Vary: Accept-Encoding\r\n"
-  //"Content-Encoding: gzip\r\n"
+  "Server: Lisod 1.0\r\n" "Vary: Accept-Encoding\r\n"
   "Content-Length: 479\r\n"
   "Connection: close\r\n"
   "Content-Type: text/html; charset=iso-8859-1\r\n\r\n"
@@ -65,7 +63,7 @@ static client_t *client_new (int client_sock, const char *client_ip,
 			     unsigned short client_port,
 			     unsigned short server_port);
 static int client_add (client_t * client);
-static client_t * client_find_by_cgi_pid (pid_t pid);
+static client_t *client_find_by_cgi_pid (pid_t pid);
 static void client_close (client_t * client);
 
 static void *get_in_addr (struct sockaddr *sa);
@@ -82,10 +80,10 @@ static void check_timeout (int sig);
 
 static int
 lisod_setup (char *cmd,
-             char *http_port, char *https_port,
+	     char *http_port, char *https_port,
 	     char *log_file_path, char *lock_file_path,
-             char *www_folder_path, char *cgi_folder_path,
-             char *private_key_path, char *certificate_path)
+	     char *www_folder_path, char *cgi_folder_path,
+	     char *private_key_path, char *certificate_path)
 {
   int i;
 
@@ -252,8 +250,17 @@ on_SIGCHLD ()
       client = client_find_by_cgi_pid (pid);
       if (client)
 	{
-          log (G.log, "INFO", "cgi(pid:%ld) exit(%d)", (long) getpid (), WEXITSTATUS(status));
-          fifo_in(client->send_buf, SERVER_ERROR_MSG, strlen(SERVER_ERROR_MSG));
+	  log (G.log, "INFO", "cgi(pid:%ld) exit(%d)", (long) getpid (),
+	       WEXITSTATUS (status));
+
+	  if (fifo_in
+	      (client->send_buf, SERVER_ERROR_MSG,
+	       strlen (SERVER_ERROR_MSG)) < 0)
+	    {
+	      log (G.log, "ERROR", "fifo_in error");
+	      client_close (client);
+	    }
+
 	  FD_CLR (client->sock_fd, &G.read_set);
 	  client->flush_close = true;
 	}
@@ -272,7 +279,7 @@ on_accept (int server_sock)
   socklen_t cli_size = sizeof (client_addr);
   char client_ip[INET_IPLEN];
   unsigned short client_port, server_port;
-  client_t * client;
+  client_t *client;
 
   /* accept client conncetion */
   G.num_ready--;
@@ -303,8 +310,14 @@ on_accept (int server_sock)
   if (client_add (client))
     {
       log (G.log, "ERROR", "client_add: client pool full");
-      fifo_in(client->send_buf, SERVER_ERROR_MSG, strlen(SERVER_ERROR_MSG));
-      FD_SET(client->sock_fd, &G.write_set);
+      if (fifo_in
+	  (client->send_buf, SERVER_ERROR_MSG, strlen (SERVER_ERROR_MSG)) < 0)
+	{
+	  log (G.log, "ERROR", "fifo_in error");
+	  client_close (client);
+	}
+
+      FD_SET (client->sock_fd, &G.write_set);
       client->flush_close = true;
     }
 }				/* end of on_accept */
@@ -380,8 +393,7 @@ on_read_sock ()
       cgi_pipe = -1;
       nparsed = http_handle_execute (client->http_handle,
 				     buf, readret,
-				     client->send_buf,
-				     &cgi_pipe, &cgi_pid);
+				     client->send_buf, &cgi_pipe, &cgi_pid);
       if (nparsed < 0)
 	{
 	  log (G.log, "INFO", "%s:%-5d - bad reqeust, will flush_close",
@@ -441,11 +453,11 @@ on_read_pipe ()
   if (readret > 0)
     {
       if (fifo_in (client->pipe_buf, buf, readret) < 0)
-        {
-          log (G.log, "ERROR", "fifo_in error");
-          client_close (client);
-          return -1;
-        }
+	{
+	  log (G.log, "ERROR", "fifo_in error");
+	  client_close (client);
+	  return -1;
+	}
       return 0;
     }
   else if (readret == 0)	/* job finished */
@@ -501,7 +513,8 @@ on_write ()
       fifo_out (client->send_buf, writeret);
       if (client->flush_close && (fifo_len (client->send_buf) == 0))
 	{
-          log (G.log, "INFO", "%s:%-5d - flushed & closed", client->ip, client->port);
+	  log (G.log, "INFO", "%s:%-5d - flushed & closed", client->ip,
+	       client->port);
 	  client_close (client);
 	  return -1;
 	}
@@ -524,7 +537,7 @@ on_write ()
 }				/* end of on_write */
 
 int
-client_add (client_t *client)
+client_add (client_t * client)
 {
   int i;
 
@@ -745,7 +758,7 @@ int
 already_running ()
 {
 #ifndef DEBUG
-  static const mode_t LOCKMODE = (S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
+  static const mode_t LOCKMODE = (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
   G.lock_file_fd =
     open (G.lock_file_fd_path, O_RDWR | O_CREAT | O_EXCL, LOCKMODE);
   if (G.lock_file_fd < 0)

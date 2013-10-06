@@ -19,7 +19,8 @@ _log (log_t * logger, const char *level, const char *fmt, ...)
   if (logger)
     {
       va_start (va_arg, fmt);
-      strftime(time_string, LOG_TIME_BUF_SIZE, "%Y-%m-%d %H:%M:%S", localtime (&now));
+      strftime (time_string, LOG_TIME_BUF_SIZE, "%Y-%m-%d %H:%M:%S",
+		localtime (&now));
       vsnprintf (log_msg, LOG_MSG_BUF_SIZE, fmt, va_arg);
       fprintf (logger->log_file, "[%s] %-5s %s\n", time_string, level,
 	       log_msg);
