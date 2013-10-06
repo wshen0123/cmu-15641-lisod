@@ -3,6 +3,8 @@
 #include <signal.h>
 #include <netinet/in.h>
 #include <openssl/ssl.h>
+#include <stdbool.h>
+
 #include "fifo.h"
 #include "log.h"
 #include "http.h"
@@ -22,7 +24,7 @@ typedef struct
   int sock_fd;
   SSL *ssl_context;
 
-  int has_job;        /* ensure next job won't run until current finishes */
+  bool has_job;        /* ensure next job won't run until current finishes */
   int pipe_fd;
   int cgi_pid;
 
@@ -31,9 +33,10 @@ typedef struct
 
   http_handle_t *http_handle;
 
-  fifo_t *recv_buf;
+  fifo_t *recv_buf;      /* buffer pipelined request for sequential parse */
+  fifo_t *pipe_buf;      /* buffer cgi output to parse CGI Status -> HTTP Status */
   fifo_t *send_buf;
-  int flush_close;      /* not read any more as bad requst but send error msg */
+  bool flush_close;      /* not read any more as bad requst but send error msg */
 
   time_t last_activity;	/* used for conn time out auto close */
 } client_t;

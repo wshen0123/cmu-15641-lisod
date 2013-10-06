@@ -29,6 +29,8 @@ enum http_status
 {
   sc_200_ok = 0,
 
+  sc_302_found,
+  sc_304_not_modified,
 #define ERROR_STATUS(status) (status > sc_200_ok)
   sc_400_bad_request,
   sc_403_forbidden,
@@ -41,7 +43,7 @@ enum http_status
   sc_503_service_unavailable,
   sc_505_http_version_not_supported,
 
-  sc_999_unknown,
+  sc_last,
 };
 
 enum http_method
@@ -130,5 +132,7 @@ http_handle_t * http_handle_new (http_setting_t * setting);
 ssize_t http_handle_execute (http_handle_t *hh, char *request, ssize_t req_len,
                          fifo_t *send_buf, int * pipe_fd, pid_t * cgi_pid);
 void http_handle_free (http_handle_t * hh);
+
+void http_cgi_status_parse (fifo_t *send_buf, fifo_t *pipe_buf);
 
 #endif

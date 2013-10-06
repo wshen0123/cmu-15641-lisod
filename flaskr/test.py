@@ -7,7 +7,7 @@ env = {'CONTENT_LENGTH':'31',
 'HTTP_REFERER':'HTTP://127.0.0.1:8080/CGI/LOGIN', 
 'SERVER_NAME':'Wayne Lisod',
 'GATEWAY_INTERFACE':'CGI/1.1',
-'CONTENT_TYPE':'APPLICATION/X-WWW-FORM-URLENCODED',
+'CONTENT_TYPE':'application/x-www-form-urlencoded',
 'REMOTE_ADDR':'127.0.0.1',
 'SERVER_SOFTWARE':'Lisod/1.0',
 'SCRIPT_NAME':'/cgi',
@@ -31,5 +31,5 @@ if __name__ == '__main__':
         txt = os.write(w, 'username=admin&password=default')
         os.waitpid(pid, 0)
     else:
-        args = ('.cgi', )
-        os.execve('./cgi', args, env) 
+        args = ('./flaskr.cgi', )
+        os.execve(args[0], args, env) 

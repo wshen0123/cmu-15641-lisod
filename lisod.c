@@ -390,16 +390,16 @@ on_read_pipe ()
 
   if (readret > 0)
     {
-      if (fifo_in (client->send_buf, buf, readret) < 0)
-	{
-	  client_close (client);
-	  log (G.log, "ERROR", "fifo_in error");
-	  return -1;
-	}
+      if (fifo_in (client->pipe_buf, buf, readret) < 0)
+        goto fifo_error;
+
       return 0;
     }
   else if (readret == 0)	/* job finished */
     {
+      http_cgi_status_parse(client->send_buf, client->pipe_buf);
+      fifo_out (client->pipe_buf, fifo_len(client->pipe_buf));
+
       FD_CLR (client->pipe_fd, &G.read_set);
       close (client->pipe_fd);
       client->pipe_fd = -1;
@@ -412,10 +412,18 @@ on_read_pipe ()
     }
   else
     {
-      log (G.log, "INFO", "[pipe] read error %s", strerror (errno));
-      client_close (client);
-      return -1;
+      goto pipe_error;
     }
+
+fifo_error:
+    log (G.log, "ERROR", "fifo_in error");
+    client_close (client);
+    return -1;
+
+pipe_error:
+    log (G.log, "INFO", "[pipe] read error %s", strerror (errno));
+    client_close (client);
+    return -1;
 }
 
 
@@ -548,18 +556,13 @@ client_new (int client_sock, const char *client_ip,
 
   client->recv_buf = fifo_init (0);
   if (!client->recv_buf)
-    {
-      log (G.log, "ERROR", "fifo_init error");
-      free (client);
-      return NULL;
-    }
+    goto fifo_error;
+  client->pipe_buf = fifo_init (0);
+  if (!client->pipe_buf)
+    goto fifo_error;
   client->send_buf = fifo_init (0);
   if (!client->send_buf)
-    {
-      log (G.log, "ERROR", "fifo_init error");
-      free (client);
-      return NULL;
-    }
+    goto fifo_error;
 
   client->flush_close = 0;
   time (&client->last_activity);
@@ -574,6 +577,11 @@ client_new (int client_sock, const char *client_ip,
   client->http_handle = http_handle_new (&hh);
 
   return client;
+
+fifo_error:
+  log (G.log, "ERROR", "fifo_init error");
+  free (client);
+  return NULL;
 
 ssl_error:
   free (client);
@@ -603,6 +611,7 @@ client_close (client_t * client)
 
 
   fifo_free (client->recv_buf);
+  fifo_free (client->pipe_buf);
   fifo_free (client->send_buf);
   http_handle_free (client->http_handle);
   free (client);

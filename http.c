@@ -41,23 +41,25 @@ static char *HTTP_NULL = "";
 typedef struct
 {
   int status_code;
-  char *reason_phase;
-} http_status_code_reason_phase;
+  char *reason_phrase;
+} http_status_code_reason_phrase;
 
-const http_status_code_reason_phase status_2_reason[] = {
-  [sc_200_ok] = {200, "ok"},
-  [sc_400_bad_request] = {400, "bad request"},
-  [sc_403_forbidden] = {403, "forbidden"},
-  [sc_404_not_found] = {404, "not found"},
-  [sc_411_length_required] = {411, "length required"},
-  [sc_413_request_entity_too_large] = {413, "request entity too large"},
-  [sc_414_request_uri_too_long] = {414, "request uri too long"},
-  [sc_500_server_internal_error] = {500, "server_internal_error"},
-  [sc_501_not_implemented] = {501, "not implemented"},
-  [sc_503_service_unavailable] = {503, "service unavailable"},
-  [sc_505_http_version_not_supported] = {505, "http version not supported"},
+const http_status_code_reason_phrase status_2_reason[] = {
+  [sc_200_ok] = {200, "OK"},
+  [sc_302_found] = {302, "Found"},
+  [sc_304_not_modified] = {304, "Not Modified"},
+  [sc_400_bad_request] = {400, "Bad Request"},
+  [sc_403_forbidden] = {403, "Forbidden"},
+  [sc_404_not_found] = {404, "Not Found"},
+  [sc_411_length_required] = {411, "Length Required"},
+  [sc_413_request_entity_too_large] = {413, "Request Entity Too Large"},
+  [sc_414_request_uri_too_long] = {414, "Request URI Too Long"},
+  [sc_500_server_internal_error] = {500, "Server Internal Error"},
+  [sc_501_not_implemented] = {501, "Not Implemented"},
+  [sc_503_service_unavailable] = {503, "Service Unavailable"},
+  [sc_505_http_version_not_supported] = {505, "HTTP Version Not Supported"},
 
-  [sc_999_unknown] = {999, "Opps?!!! How do we get here :>=<:"},
+  [sc_last] = {999, "Opps?!!! How do we get here :>=<:"},
 };
 
 enum http_uri_type check_uri_type (const char *uri);
@@ -138,7 +140,7 @@ http_handle_reset (http_handle_t * hh)
 {
   http_parser_reset(&hh->parser);
   http_request_reset(&hh->request);
-  hh->status = sc_999_unknown;
+  hh->status = sc_last;
 }
 
 void
@@ -246,7 +248,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	case s_header_line:
 	  if (c != CR)
 	    {
-	      buf[buf_index++] = toupper (c);
+	      buf[buf_index++] = c;
 	      break;
 	    }
 
@@ -402,7 +404,7 @@ http_parser_header_line  (http_request_t * req, const char *buf)
 
       req->num_headers++;
 
-      if (!strcmp (name, "CONTENT-LENGTH"))
+      if (!strcasecmp (name, "CONTENT-LENGTH"))
 	{
 	  if (strlen (value) == 0)
 	    return sc_411_length_required;
@@ -556,7 +558,7 @@ http_do_response_error (http_handle_t * hh, fifo_t * send_buf)
   strftime (date, MAXLEN, "%a, %d %b %Y %H:%M:%S %Z", &tm);
 
   code = status_2_reason[hh->status].status_code;
-  reason = status_2_reason[hh->status].reason_phase;
+  reason = status_2_reason[hh->status].reason_phrase;
 
   sprintf (buf_body, HTTP_RESPONSE_ERROR_BODY, code, reason, reason);
 
@@ -588,6 +590,7 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
     query_string[HTTP_CGI_ENVP_MAXLEN], script_name[HTTP_CGI_ENVP_MAXLEN];
 
   ARGV[0] = "./cgi";
+  ARGV[1] = NULL;
 
   if (parse_uri_dynamic
       (hh, path_info, request_uri, query_string, script_name))
@@ -638,11 +641,13 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
       close (stdout_pipe[1]);
       close (stdin_pipe[0]);
 
-      write_ret = write (stdin_pipe[1], hh->request.message_body,
-                         hh->request.content_length);
-      if (write_ret < 0)
-	return -1;
-
+      if (hh->request.method == HTTP_METHOD_POST)
+        {
+          write_ret = write (stdin_pipe[1], hh->request.message_body,
+                            hh->request.content_length);
+          if (write_ret < 0)
+            return -1;
+        }
 
       close (stdin_pipe[1]);
       *pipe_fd = stdout_pipe[0];
@@ -652,6 +657,35 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
       return 0;
     }
   return 0;
+}
+
+void http_cgi_status_parse (fifo_t *send_buf, fifo_t *pipe_buf)
+{
+  static const char HTTP_RESPONSE_LINE[] = "HTTP/1.1 %d %s\r\n";
+  static const size_t STATUS_LINE_MINLEN = 11;
+  
+  int i, status_code;
+  char *cp, *reason_phrase, response_line[MAXLEN];
+
+  cp = fifo_head(pipe_buf);
+
+  if (fifo_len (pipe_buf) > STATUS_LINE_MINLEN 
+      && !strncasecmp(cp, "status: ", strlen("status: ")))
+    {
+      cp += strlen("status: ");
+      status_code = atoi(cp);
+      for (i = 0; i < sc_last - 1; i++)
+        {
+          if (status_2_reason[i].status_code == status_code)
+            {
+              reason_phrase = status_2_reason[i].reason_phrase;
+              break;
+            }
+        }
+      sprintf(response_line, HTTP_RESPONSE_LINE, status_code, reason_phrase);
+      fifo_in(send_buf, response_line, strlen(response_line));
+    }
+  fifo_in(send_buf, fifo_head(pipe_buf), fifo_len(pipe_buf));
 }
 
 void
@@ -702,59 +736,60 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
 
   for (i = 0; i < hh->request.num_headers; i++)
     {
-      if (!strcmp (headers[i][HTTP_HEADER_NAME], "CONTENT-TYPE"))
+      if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "CONTENT-TYPE"))
 	{
 	  sprintf (buf, "CONTENT_TYPE=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "ACCEPT"))
+      else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCEPT"))
 	{
 	  sprintf (buf, "HTTP_ACCEPT=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "REFERER"))
+      else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "REFERER"))
 	{
 	  sprintf (buf, "HTTP_REFERER=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "ACCEPT-ENCODING"))
+      else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCEPT-ENCODING"))
 	{
 	  sprintf (buf, "HTTP_ACCEPT_ENCODING=%s",
 		   headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "ACCPET-LANGUAGE"))
+      else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCPET-LANGUAGE"))
 	{
 	  sprintf (buf, "HTTP_ACCEPT_LANGUAGE=%s",
 		   headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "ACCEPT-CHARSET"))
+      else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCEPT-CHARSET"))
 	{
 	  sprintf (buf, "HTTP_ACCEPT_CHARSET=%s",
 		   headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "COOKIE"))
+      else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "COOKIE"))
 	{
 	  sprintf (buf, "HTTP_COOKIE=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "USER-AGENT"))
+      else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "USER-AGENT"))
 	{
 	  sprintf (buf, "HTTP_USER_AGENT=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "CONNECTION"))
+      else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "CONNECTION"))
 	{
 	  envp[index++] = make_string (buf);
 	}
-      else if (!strcmp (headers[i][HTTP_HEADER_NAME], "HOST"))
+      else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "HOST"))
 	{
 	  sprintf (buf, "HTTP_HOST=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
     }
+  envp[index] = NULL;
 }
 
 

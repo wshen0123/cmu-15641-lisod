@@ -1,9 +1,0 @@
-#! /usr/bin/env python
-
-import os, sys
-
-print str(os.environ.items())
-
-msg = sys.stdin.read(1000)
-print "Len:%d" % len(msg)
-print msg
