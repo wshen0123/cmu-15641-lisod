@@ -299,7 +299,7 @@ on_accept (int server_sock)
 	     get_in_addr ((struct sockaddr *) &client_addr),
 	     client_ip, sizeof (client_ip));
   client_port = ntohs (get_in_port ((struct sockaddr *) &client_addr));
-  log (G.log, "INFO", "%s:%-5d - connected", client_ip, client_port);
+  log (G.log, "INFO", "%s:%-5d + connected", client_ip, client_port);
 
   /* add client(fd) to pool */
   server_port = (server_sock == G.http_sock ? G.http_port : G.https_port);
@@ -329,7 +329,7 @@ on_accept (int server_sock)
 void
 on_ready ()
 {
-  int i, client_sock, client_pipe;
+  int i, sock, pipe;
 
   for (i = 0; (i <= G.maxi) && (G.num_ready > 0); i++)
     {
@@ -338,10 +338,10 @@ on_ready ()
 
       G.client_curr = G.clients[i];
 
-      client_sock = G.client_curr->sock_fd;
-      client_pipe = G.client_curr->cgi_pipe;
+      sock = G.client_curr->sock_fd;
+      pipe = G.client_curr->cgi_pipe;
 
-      if (FD_ISSET (client_sock, &G.read_ready_set))
+      if (FD_ISSET (sock, &G.read_ready_set))
 	{
 	  G.num_ready--;
 	  if (on_read_sock () < 0)
@@ -350,17 +350,16 @@ on_ready ()
 	      continue;
 	    }
 	}
-      if (client_pipe >= 0)
-	{
-	  if (FD_ISSET (client_pipe, &G.read_ready_set))
-	    G.num_ready--;
+      if ((pipe >= 0) && FD_ISSET (pipe, &G.read_ready_set))
+        {
+	  G.num_ready--;
 	  if (on_read_pipe () < 0)
 	    {
 	      G.clients[i] = NULL;
 	      continue;
 	    }
 	}
-      if (FD_ISSET (client_sock, &G.write_ready_set))
+      if (FD_ISSET (sock, &G.write_ready_set))
 	{
 	  G.num_ready--;
 	  if (on_write () < 0)
@@ -421,6 +420,8 @@ on_read_sock ()
 	  client->cgi_pipe = cgi_pipe;
 	  client->cgi_pid = cgi_pid;
 	  FD_SET (cgi_pipe, &G.read_set);
+          if (cgi_pipe > G.max_fd)
+            G.max_fd = cgi_pipe;
 	}
       return 0;
     }
@@ -817,7 +818,7 @@ check_timeout (int sig)
 
       if (time_gone > TIMEOUT)
 	{
-	  log (G.log, "INFO", "%s:%-5d timed out and force closed",
+	  log (G.log, "INFO", "%s:%-5d timed out",
 	       client->ip, client->port);
 	  client_close (client);
 	  G.clients[i] = NULL;

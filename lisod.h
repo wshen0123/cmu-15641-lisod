@@ -10,7 +10,7 @@
 #include "http.h"
 
 #ifdef DEBUG
-#define TIMEOUT 100
+#define TIMEOUT 1000
 #else
 #define TIMEOUT 5
 #endif
