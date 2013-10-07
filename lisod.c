@@ -59,9 +59,9 @@ static int on_read_sock ();
 static int on_read_pipe ();
 static int on_write ();
 
-static client_t *client_new (int client_sock, const char *client_ip,
-			     unsigned short client_port,
-			     unsigned short server_port);
+static client_t *client_init (int client_sock, const char *client_ip,
+			      unsigned short client_port,
+			      unsigned short server_port);
 static int client_add (client_t * client);
 static client_t *client_find_by_cgi_pid (pid_t pid);
 static void client_close (client_t * client);
@@ -226,12 +226,16 @@ lisod_exit ()
 
   if (G.ssl_context)
     SSL_CTX_free (G.ssl_context);
-  log (G.log, "INFO", "[lisod pid:%5ld] SHUTDOWN", (long) getpid ());
-  log_exit (G.log);
-  remove (G.lock_file_path);
 
   for (i = 0; i < FD_SETSIZE; i++)
     client_close (G.clients[i]);
+
+  remove (G.lock_file_path);
+
+  log (G.log, "INFO", "[lisod pid:%5ld] Remove Lock file", (long) getpid ());
+  log (G.log, "INFO", "[lisod pid:%5ld] SHUTDOWN", (long) getpid ());
+
+  log_exit (G.log);
 
   exit (EXIT_SUCCESS);
 }
@@ -239,7 +243,7 @@ lisod_exit ()
 void
 on_SIGCHLD ()
 {
-  int status;
+  int status = 0;
   pid_t pid;
   client_t *client;
   do
@@ -300,7 +304,7 @@ on_accept (int server_sock)
   /* add client(fd) to pool */
   server_port = (server_sock == G.http_sock ? G.http_port : G.https_port);
 
-  client = client_new (client_sock, client_ip, client_port, server_port);
+  client = client_init (client_sock, client_ip, client_port, server_port);
   if (!client)
     {
       log (G.log, "ERROR", "client_new:%s", strerror (errno));
@@ -426,7 +430,6 @@ on_read_sock ()
     }
   else if (readret == 0)
     {
-      log (G.log, "INFO", "%s:%-5d - closed", client->ip, client->port);
       client_close (client);
       return -1;
     }
@@ -498,8 +501,6 @@ on_write ()
   if (fifo_len (client->send_buf) == 0)
     return 0;
 
-  time (&client->last_activity);
-
   if (client->ssl_context)
     writeret = SSL_write (client->ssl_context, fifo_head (client->send_buf),
 			  fifo_len (client->send_buf));
@@ -513,8 +514,7 @@ on_write ()
       fifo_out (client->send_buf, writeret);
       if (client->flush_close && (fifo_len (client->send_buf) == 0))
 	{
-	  log (G.log, "INFO", "%s:%-5d - flushed & closed", client->ip,
-	       client->port);
+	  log (G.log, "INFO", "%s:%-5d - flushed ", client->ip, client->port);
 	  client_close (client);
 	  return -1;
 	}
@@ -561,8 +561,8 @@ client_add (client_t * client)
 }
 
 client_t *
-client_new (int client_sock, const char *client_ip,
-	    unsigned short client_port, unsigned short server_port)
+client_init (int client_sock, const char *client_ip,
+	     unsigned short client_port, unsigned short server_port)
 {
   client_t *client;
   http_setting_t hh;
@@ -626,7 +626,7 @@ client_new (int client_sock, const char *client_ip,
   hh.server_port = server_port;
   hh.log = G.log;
 
-  client->http_handle = http_handle_new (&hh);
+  client->http_handle = http_handle_init (&hh);
 
   return client;
 
@@ -672,10 +672,13 @@ client_close (client_t * client)
       FD_CLR (client->sock_fd, &G.read_set);
       FD_CLR (client->sock_fd, &G.write_set);
       close_sock (client->sock_fd);
+      log (G.log, "INFO", "%s:%-5d - closed", client->ip, client->port);
     }
   if (client->cgi_pipe >= 0)
-    close (client->cgi_pipe);
-
+    {
+      FD_CLR (client->cgi_pipe, &G.read_set);
+      close (client->cgi_pipe);
+    }
 
   fifo_free (client->recv_buf);
   fifo_free (client->pipe_buf);
@@ -760,7 +763,7 @@ already_running ()
 #ifndef DEBUG
   static const mode_t LOCKMODE = (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
   G.lock_file_fd =
-    open (G.lock_file_fd_path, O_RDWR | O_CREAT | O_EXCL, LOCKMODE);
+    open (G.lock_file_path, O_RDWR | O_CREAT | O_EXCL, LOCKMODE);
   if (G.lock_file_fd < 0)
     {
       fprintf (stderr, "Error: cannot create lock file\n");
@@ -814,7 +817,7 @@ check_timeout (int sig)
 
       if (time_gone > TIMEOUT)
 	{
-	  log (G.log, "INFO", "%s:%-5d] timed out and force closed",
+	  log (G.log, "INFO", "%s:%-5d timed out and force closed",
 	       client->ip, client->port);
 	  client_close (client);
 	  G.clients[i] = NULL;

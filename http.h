@@ -8,57 +8,68 @@
 /* forward state(next anticipated state) */
 enum http_state
 {
-  s_start = 0,
+  S_START = 0,
 
-  s_request_line,
-  s_request_line_LF,
+  S_REQUEST_LINE,
+  S_REQUEST_LINE_LF,
 
-  s_header_line,
-  s_header_line_LF,
-  s_headers_LF,
-#define PARSING_HEADER(state) (state <= s_headers_LF)
+  S_HEADER_LINE,
+  S_HEADER_LINE_LF,
+  S_HEADERS_LF,
+#define PARSING_HEADER(STATE) (STATE <= S_HEADERS_LF)
 
-  s_message_body,
-#define PARSING_INCOMPLETE(state) (state < s_done)
-  s_done,
+  S_MESSAGE_BODY,
+#define PARSING_INCOMPLETE(STATE) (STATE < S_DONE)
+  S_DONE,
 
-  s_dead,
+  S_DEAD,
+  S_LAST,
 };
 
 enum http_status
 {
-  sc_200_ok = 0,
+  SC_UNKNOWN = -1,
 
-  sc_302_found,
-  sc_304_not_modified,
-#define ERROR_STATUS(status) (status > sc_200_ok)
-  sc_400_bad_request,
-  sc_403_forbidden,
-  sc_404_not_found,
-  sc_411_length_required,
-  sc_413_request_entity_too_large, 
-  sc_414_request_uri_too_long,
-  sc_500_server_internal_error,
-  sc_501_not_implemented,
-  sc_503_service_unavailable,
-  sc_505_http_version_not_supported,
+  SC_200_OK = 0,
 
-  sc_last,
+  SC_302_FOUND,
+  SC_304_NOT_MODIFIED,
+
+#define ERROR_STATUS(STATUS) (STATUS > SC_200_OK)
+  SC_400_BAD_REQUEST,
+  SC_403_FORBIDDEN,
+  SC_404_NOT_FOUND,
+  SC_411_LENGTH_REQUIRED,
+  SC_413_REQUEST_ENTITY_TOO_LARGE,
+  SC_414_REQUEST_URI_TOO_LONG,
+
+  SC_500_SERVER_INTERNAL_ERROR,
+  SC_501_NOT_IMPLEMENTED,
+  SC_503_SERVICE_UNAVAILABLE,
+  SC_505_HTTP_VERSION_NOT_SUPPORTED,
+
+  SC_LAST,
 };
 
 enum http_method
 {
-  HTTP_METHOD_NOT_IMPLEMENTED = 0,
-  HTTP_METHOD_GET,
-  HTTP_METHOD_HEAD,
-  HTTP_METHOD_POST,
+  HM_UNKNOWN = -1,
+
+  HM_NOT_IMPLEMENTED = 0,
+  HM_GET,
+  HM_HEAD,
+  HM_POST,
+
+  HM_LAST,
 };
-#define HAS_BODY(method) (method == HTTP_METHOD_POST)
+#define HAS_BODY(method) (method == HM_POST)
 
 enum http_version
 {
-  HTTP_VERSION_NOT_IMPLEMENTED = 0,
-  HTTP_VERSION_1_1,
+  HV_UNKNOWN = -1,
+
+  HV_NOT_IMPLEMENTED = 0,
+  HV_11,
 };
 
 /* http_parser: stream parser FSM holder,
@@ -70,7 +81,7 @@ typedef struct
   size_t header_len;
   size_t body_len;
 
-  char buf[HTTP_MAX_HEADER_SIZE];       /* used to hold uri/port/path/query string */
+  char buf[HTTP_MAX_HEADER_SIZE];	/* used to hold uri/port/path/query string */
   size_t buf_index;
 
 } http_parser_t;
@@ -81,16 +92,16 @@ typedef struct
 typedef struct
 {
   enum http_method method;
-  char * uri;
+  char *uri;
   enum http_version version;
 
 #define HTTP_HEADER_NAME 0
 #define HTTP_HEADER_VALUE 1
   char *headers[HTTP_MAX_HEADER_NUM][2];
-  size_t num_headers;
+  size_t num_header;
 
   char *message_body;
-  size_t content_length;
+  ssize_t content_length;
 } http_request_t;
 
 /* http_handle_t: this is the handle hold by lisod
@@ -106,7 +117,7 @@ typedef struct
   unsigned short client_port;
   unsigned short server_port;
   log_t *log;
-  
+
   /* handle */
   http_parser_t parser;
   http_request_t request;
@@ -128,11 +139,12 @@ typedef struct
   log_t *log;
 } http_setting_t;
 
-http_handle_t * http_handle_new (http_setting_t * setting);
-ssize_t http_handle_execute (http_handle_t *hh, char *request, ssize_t req_len,
-                         fifo_t *send_buf, int * pipe_fd, pid_t * cgi_pid);
+http_handle_t *http_handle_init (http_setting_t * setting);
+ssize_t http_handle_execute (http_handle_t * hh, char *request,
+			     ssize_t req_len, fifo_t * send_buf, int *pipe_fd,
+			     pid_t * cgi_pid);
 void http_handle_free (http_handle_t * hh);
 
-void http_cgi_finish_callback (fifo_t *send_buf, fifo_t *pipe_buf);
+void http_cgi_finish_callback (fifo_t * send_buf, fifo_t * pipe_buf);
 
 #endif

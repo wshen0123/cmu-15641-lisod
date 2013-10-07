@@ -10,9 +10,9 @@
 #include "http.h"
 
 #ifdef DEBUG
-  #define TIMEOUT 100
+#define TIMEOUT 100
 #else
-  #define TIMEOUT 5
+#define TIMEOUT 5
 #endif
 
 #define INET_IPLEN INET6_ADDRSTRLEN
@@ -24,7 +24,7 @@ typedef struct
   int sock_fd;
   SSL *ssl_context;
 
-  bool has_job;        /* ensure next job won't run until current finishes */
+  bool has_job;			/* ensure next job won't run until current finishes */
   int cgi_pipe;
   int cgi_pid;
 
@@ -33,12 +33,12 @@ typedef struct
 
   http_handle_t *http_handle;
 
-  fifo_t *recv_buf;      /* buffer pipelined request for sequential parse */
-  fifo_t *pipe_buf;      /* buffer cgi output to parse CGI Status -> HTTP Status */
+  fifo_t *recv_buf;		/* buffer pipelined request for sequential parse */
+  fifo_t *pipe_buf;		/* buffer cgi output to parse CGI Status -> HTTP Status */
   fifo_t *send_buf;
-  bool flush_close;      /* not read any more as bad requst but send error msg */
+  bool flush_close;		/* not read any more as bad requst but send error msg */
 
-  time_t last_activity;	/* used for conn time out auto close */
+  time_t last_activity;		/* used for conn time out auto close */
 } client_t;
 
 struct global_var
@@ -68,7 +68,7 @@ struct global_var
 
   client_t *client_curr;
   client_t *clients[FD_SETSIZE];
-  int maxi;		        /* highwater index into client array */
+  int maxi;			/* highwater index into client array */
 } G;
 
 #endif

@@ -1,1 +1,1 @@
-valgrind --track-origins=yes -v --leak-check=yes ./lisod 8080 4443 ~/tmp/lisod.log ~/tmp/lisod.lock ~/tmp/www/ ~/tmp/www/cgi/ ~/tmp/priv.key ~/tmp/cert.crt
+valgrind --track-origins=yes -v --leak-check=yes ./lisod 8080 4443 ~/tmp/lisod.log ~/tmp/lisod.lock ~/tmp/www/ /home/wshen1/workspace/project/cmu-15-641-lisod/flaskr/flaskr.cgi ~/tmp/priv.key ~/tmp/cert.crt
