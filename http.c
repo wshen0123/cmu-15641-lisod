@@ -136,11 +136,15 @@ http_handle_execute (http_handle_t * hh,
 
   if (hh->parser.state == S_DONE)
     {
-      http_handle_reset (hh);
       if (hh->request.keep_alive)
-        return HCS_CONNECTION_ALIVE;
+        {
+          http_handle_reset (hh);
+          return HCS_CONNECTION_ALIVE;
+        }
       else
-        return HCS_CONNECTION_CLOSE_FINISHED;
+        {
+          return HCS_CONNECTION_CLOSE_FINISHED;
+        }
     }
   return HCS_CONNECTION_ALIVE;
 }

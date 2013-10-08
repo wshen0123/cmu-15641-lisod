@@ -25,7 +25,8 @@ typedef struct
   int sock_fd;
   SSL *ssl_context;
 
-  bool has_job;			/* ensure next job won't run until current finishes */
+  /* ensure next job won't run until current finishes: pipelining order */
+  bool has_undone_job;			
   int cgi_pipe;
   int cgi_pid;
 
@@ -36,9 +37,11 @@ typedef struct
 
   fifo_t *recv_buf;		/* buffer pipelined request for sequential parse */
   fifo_t *pipe_buf;		/* buffer cgi output to parse CGI Status -> HTTP Status */
-  fifo_t *send_buf;
+  fifo_t *send_buf;             /* buffer lisod response */
+
   bool flush_close;		/* not read any more as bad requst but send error msg */
 
+  /* backup internal error static buf in case of system resource falure */
   bool use_internal_error_buf;
   const char *internal_error_buf_ptr;
   ssize_t internal_error_buf_to_write_len;

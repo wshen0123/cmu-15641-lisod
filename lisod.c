@@ -337,6 +337,8 @@ on_ready ()
 
       G.client_curr = G.clients[i];
 
+      on_job_do (G.client_curr);
+
       sock = G.client_curr->sock_fd;
       pipe = G.client_curr->cgi_pipe;
 
@@ -374,14 +376,9 @@ on_ready ()
 int
 on_read_sock ()
 {
-  int cgi_pipe, cgi_pid;
   char buf[LISOD_MAXLEN];
-  ssize_t readret, handled_len;
+  ssize_t readret;
   client_t *client;
-  enum http_connection_state conn_state;
-
-  if (G.client_curr->has_job)
-    return 0;
 
   client = G.client_curr;
   time (&client->last_activity);
@@ -393,60 +390,8 @@ on_read_sock ()
 
   if (readret > 0)
     {
-      cgi_pipe = -1;
-      conn_state = http_handle_execute (client->http_handle,
-					buf, readret,
-					&handled_len,
-					client->send_buf, &cgi_pipe,
-					&cgi_pid);
-      switch (conn_state)
-	{
-	case HCS_CONNECTION_CLOSE_BAD_REQUEST:	/* no recv still flush send_buf */
-	  {
-	    log (G.log, "INFO", "%s:%-5d - bad request, will close",
-		 client->ip, client->port);
-	  } /* fall through to flush close procedure */
-	case HCS_CONNECTION_CLOSE_FINISHED: /* no recv still flush send_buf */
-	  {
-	    client->flush_close = true;
-	    FD_CLR (client->sock_fd, &G.read_set);
-	    break;
-	  }
-	case HCS_CONNECTION_CLOSE_INTERNAL_ERROR: /* no recv, flush server defined res */
-	  {
-	    log (G.log, "INFO", "%s:%-5d - internal error", client->ip,
-		 client->port);
-	    FD_CLR (client->sock_fd, &G.read_set); /* no recv but write to */
-	    client->use_internal_error_buf = true;
-	    client->internal_error_buf_ptr = SERVER_ERROR_MSG;
-	    client->internal_error_buf_to_write_len = SERVER_ERROR_MSG_LEN;
-	    break;
-	  }
-	case HCS_CONNECTION_ALIVE:
-	  {
-	    if (fifo_in
-		(client->recv_buf, buf + handled_len,
-		 readret - handled_len) < 0)
-	      {
-		log (G.log, "ERROR", "fifo_in error");
-		client_close (client);
-		return -1;
-	      }
-	    if (cgi_pipe >= 0)	/* got cgi pipe as response: dynamic content */
-	      {
-		client->has_job = true;
-		client->cgi_pipe = cgi_pipe;
-		client->cgi_pid = cgi_pid;
-		FD_SET (cgi_pipe, &G.read_set);
-		if (cgi_pipe > G.max_fd)
-		  G.max_fd = cgi_pipe;
-	      }
-	  }
-	  break;
-	default:
-	  break;
-	}
-      return 0;
+      if (fifo_in (client->recv_buf, buf, readret) < 0)
+        return -1;
     }
   else if (errno == EINTR)
     {
@@ -489,14 +434,7 @@ on_read_pipe ()
     }
   else if (readret == 0)	/* job finished */
     {
-      http_cgi_finish_callback (client->send_buf, client->pipe_buf);
-      fifo_out (client->pipe_buf, fifo_len (client->pipe_buf));
-
-      FD_CLR (client->cgi_pipe, &G.read_set);
-      close (client->cgi_pipe);
-      client->cgi_pipe = -1;
-      client->has_job = false;
-      return 0;
+      return on_job_done (client);
     }
   else if (errno == EINTR)
     {
@@ -510,7 +448,6 @@ on_read_pipe ()
     }
   return -1;
 }
-
 
 int
 on_write ()
@@ -577,6 +514,83 @@ on_write ()
     }
 }				/* end of on_write */
 
+
+int
+on_job_do (client_t * client)
+{
+  int cgi_pipe, cgi_pid;
+  ssize_t handled_len;
+  enum http_connection_state conn_state;
+  if (G.client_curr->has_undone_job || (fifo_len (client->recv_buf) == 0))
+    return 0;
+
+  cgi_pipe = -1;
+  conn_state = http_handle_execute (client->http_handle,
+				    fifo_head (client->recv_buf),
+				    fifo_len (client->recv_buf),
+				    &handled_len,
+				    client->send_buf, &cgi_pipe, &cgi_pid);
+  switch (conn_state)
+    {
+    case HCS_CONNECTION_CLOSE_BAD_REQUEST:	/* no recv still flush send_buf */
+      {
+	log (G.log, "INFO", "%s:%-5d - bad request, will close",
+	     client->ip, client->port);
+      }				/* fall through to flush close procedure */
+    case HCS_CONNECTION_CLOSE_FINISHED:	/* no recv still flush send_buf */
+      {
+	client->flush_close = true;
+	FD_CLR (client->sock_fd, &G.read_set);
+	break;
+      }
+    case HCS_CONNECTION_CLOSE_INTERNAL_ERROR:	/* no recv, flush server defined res */
+      {
+	log (G.log, "INFO", "%s:%-5d - internal error", client->ip,
+	     client->port);
+	FD_CLR (client->sock_fd, &G.read_set);	/* no recv but write to */
+	client->use_internal_error_buf = true;
+	client->internal_error_buf_ptr = SERVER_ERROR_MSG;
+	client->internal_error_buf_to_write_len = SERVER_ERROR_MSG_LEN;
+	break;
+      }
+    case HCS_CONNECTION_ALIVE:
+      {
+	if (fifo_out (client->recv_buf, handled_len) < 0)
+	  {
+	    log (G.log, "ERROR", "fifo_in error");
+	    client_close (client);
+	    return -1;
+	  }
+	if (cgi_pipe >= 0)	/* got cgi pipe as response: dynamic content */
+	  {
+	    client->has_undone_job = true;
+	    client->cgi_pipe = cgi_pipe;
+	    client->cgi_pid = cgi_pid;
+	    FD_SET (cgi_pipe, &G.read_set);
+	    if (cgi_pipe > G.max_fd)
+	      G.max_fd = cgi_pipe;
+	  }
+      }
+      break;
+    default:
+      break;
+    }
+  return 0;
+}
+
+int
+on_job_done (client_t *client)
+{
+      http_cgi_finish_callback (client->send_buf, client->pipe_buf);
+      fifo_out (client->pipe_buf, fifo_len (client->pipe_buf));
+
+      FD_CLR (client->cgi_pipe, &G.read_set);
+      close (client->cgi_pipe);
+      client->cgi_pipe = -1;
+      client->has_undone_job = false;
+      return 0;
+}
+
 int
 client_add (client_t * client)
 {
@@ -640,7 +654,7 @@ client_init (int client_sock, const char *client_ip,
     {
       client->ssl_context = NULL;
     }
-  client->has_job = false;
+  client->has_undone_job = false;
   client->cgi_pipe = -1;
   client->cgi_pid = -1;
 
