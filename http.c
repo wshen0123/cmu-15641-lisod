@@ -116,27 +116,33 @@ http_handle_init (http_setting_t * setting)
   return hh;
 }
 
-ssize_t
-http_handle_execute (http_handle_t * hh, char *request, ssize_t req_len,
-		     fifo_t * send_buf, int *pipe_fd, pid_t * cgi_pid)
+enum http_connection_state
+http_handle_execute (http_handle_t * hh,
+                     char *request, ssize_t req_len,
+                     ssize_t *handled_len,
+		     fifo_t * send_buf,
+                     int *pipe_fd, pid_t * cgi_pid)
 {
-  ssize_t nparsed;
-
-  nparsed = http_parser_execute (hh, request, req_len);
+  *handled_len = http_parser_execute (hh, request, req_len);
 
   if (PARSING_INCOMPLETE (hh->parser.state))
-    return nparsed;
+    return HCS_CONNECTION_ALIVE;
 
   if (http_do_response (hh, send_buf, pipe_fd, cgi_pid))
-    return -1;
+    return HCS_CONNECTION_CLOSE_INTERNAL_ERROR;
 
   if (hh->parser.state == S_DEAD)
-    return -1;
+    return HCS_CONNECTION_CLOSE_BAD_REQUEST;
 
   if (hh->parser.state == S_DONE)
-    http_handle_reset (hh);
-
-  return nparsed;
+    {
+      http_handle_reset (hh);
+      if (hh->request.keep_alive)
+        return HCS_CONNECTION_ALIVE;
+      else
+        return HCS_CONNECTION_CLOSE_FINISHED;
+    }
+  return HCS_CONNECTION_ALIVE;
 }
 
 
@@ -199,7 +205,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
       if (PARSING_HEADER (state))
 	{
 	  header_len++;
-	  if (header_len > HTTP_MAX_HEADER_SIZE)
+	  if (header_len > HTTP_HEADER_MAXLEN)
 	    {
 	      state = S_DEAD;
 	      hh->status = SC_413_REQUEST_ENTITY_TOO_LARGE;
@@ -340,9 +346,9 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 enum http_status
 http_parser_on_request_line (http_request_t * req, const char *request_line)
 {
-  char method[HTTP_MAX_HEADER_SIZE] = "";
-  char uri[HTTP_MAX_HEADER_SIZE] = "";
-  char version[HTTP_MAX_HEADER_SIZE] = "";
+  char method[HTTP_HEADER_MAXLEN] = "";
+  char uri[HTTP_HEADER_MAXLEN] = "";
+  char version[HTTP_HEADER_MAXLEN] = "";
 
   sscanf (request_line, "%s %s %s", method, uri, version);
 
@@ -360,7 +366,11 @@ http_parser_on_request_line (http_request_t * req, const char *request_line)
       return SC_501_NOT_IMPLEMENTED;
     }
 
-  if (!strcmp (version, "HTTP/1.1"))
+  if (!strcmp (version, "HTTP/1.0"))
+    {
+      req->version = HV_10;
+    }
+  else if (!strcmp (version, "HTTP/1.1"))
     {
       req->version = HV_11;
     }
@@ -378,8 +388,8 @@ http_parser_on_header_line (http_request_t * req, const char *header_line)
 {
   const char *p;
   char *cp;
-  char name[HTTP_MAX_HEADER_SIZE] = "";
-  char value[HTTP_MAX_HEADER_SIZE] = "";
+  char name[HTTP_HEADER_MAXLEN] = "";
+  char value[HTTP_HEADER_MAXLEN] = "";
 
   p = header_line;
   while (*p != '\0')
@@ -409,6 +419,13 @@ http_parser_on_header_line (http_request_t * req, const char *header_line)
 	      }
 	  req->content_length = atoi (value);
 	}
+      if (!strcasecmp (name, "CONNECTION"))
+        {
+          if (!strcasecmp (value, "keep-alive"))
+            req->keep_alive = true;
+          else
+            req->keep_alive = false;
+        }
     }
   else
     {
@@ -425,6 +442,7 @@ http_request_init (http_request_t * request)
   request->uri = NULL;
   request->version = HV_UNKNOWN;
   request->num_header = 0;
+  request->keep_alive = false;
   request->message_body = NULL;
   request->content_length = -1;
 }
@@ -451,6 +469,8 @@ http_request_reset (http_request_t * request)
       free (request->message_body);
       request->message_body = NULL;
     }
+  request->version = HV_UNKNOWN;
+  request->keep_alive = false;
   request->content_length = -1;
 }
 
@@ -493,7 +513,7 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
     "Server: Lisod/1.0\r\n"
     "Date: %s\r\n" "Content-length: %zd\r\n" "Content-type: %s\r\n\r\n";
 
-  char buf[HTTP_MAX_HEADER_SIZE],
+  char buf[HTTP_HEADER_MAXLEN],
     file_path[MAXLEN], file_type[MAXLEN], date[MAXLEN], *file_data, *p;
   int file_fd;
   size_t file_size;
@@ -526,7 +546,7 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
   file_size = sbuf.st_size;
   get_file_type (file_path, file_type);
 
-  sprintf (buf, HTTP_RESPONSE_OK, date, file_size, file_type);
+  snprintf (buf, HTTP_HEADER_MAXLEN, HTTP_RESPONSE_OK, date, file_size, file_type);
 
   /* if has response body */
 
@@ -573,12 +593,12 @@ http_do_response_error (http_handle_t * hh, fifo_t * send_buf)
     "Server: Lisod/1.0\r\n"
     "Date: %s\r\n" "Content-length: %zd\r\n" "Content-type: %s\r\n\r\n";
 
-  static const char HTTP_RESPONSE_ERROR_BODY[] =
+  static const char HTTP_RESPONSE_ERROR_HTML[] =
     "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">"
     "<html><head>"
     "<title>%d %s</title>" "</head><body>" "<h1>%s</h1>" "</body></html>";
 
-  char buf[MAXLEN], buf_body[MAXLEN], date[MAXLEN], *reason;
+  char res_buf[MAXLEN], html_buf[MAXLEN], date[MAXLEN], *reason;
   int code;
   size_t content_length;
   time_t now;
@@ -591,15 +611,15 @@ http_do_response_error (http_handle_t * hh, fifo_t * send_buf)
   code = status_2_reason[hh->status].status_code;
   reason = status_2_reason[hh->status].reason_phrase;
 
-  sprintf (buf_body, HTTP_RESPONSE_ERROR_BODY, code, reason, reason);
+  snprintf (html_buf, MAXLEN, HTTP_RESPONSE_ERROR_HTML, code, reason, reason);
 
-  content_length = strlen (buf_body);
+  content_length = strlen (html_buf);
 
-  sprintf (buf, HTTP_RESPONSE_ERROR, code, reason, date, content_length,
+  snprintf (res_buf, MAXLEN, HTTP_RESPONSE_ERROR, code, reason, date, content_length,
 	   "text/html");
-  strcat (buf, buf_body);
+  strcat (res_buf, html_buf);
 
-  if (fifo_in (send_buf, buf, strlen (buf)) < 0)
+  if (fifo_in (send_buf, res_buf, strlen (res_buf)) < 0)
     return -1;
 
   return 0;
@@ -709,7 +729,7 @@ http_cgi_finish_callback (fifo_t * send_buf, fifo_t * pipe_buf)
 	      break;
 	    }
 	}
-      sprintf (response_line, HTTP_RESPONSE_LINE, status_code, reason_phrase);
+      snprintf (response_line, MAXLEN, HTTP_RESPONSE_LINE, status_code, reason_phrase);
       fifo_in (send_buf, response_line, strlen (response_line));
     }
   fifo_in (send_buf, fifo_head (pipe_buf), fifo_len (pipe_buf));
@@ -720,7 +740,7 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
 	    char *request_uri, char *query_string, char *script_name)
 {
   int index, i;
-  char buf[1024], *(*headers)[2];
+  char buf[MAXLEN], *(*headers)[2];
 
   index = 0;
 
@@ -728,19 +748,19 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
   envp[index++] = make_string ("SERVER_PROTOCOL=HTTP/1.1");
   envp[index++] = make_string ("SERVER_SOFTWARE=Lisod/1.0");
   envp[index++] = make_string ("SERVER_NAME=Wayne Lisod");
-  sprintf (buf, "PATH_INFO=%s", path_info);
+  snprintf (buf, MAXLEN, "PATH_INFO=%s", path_info);
   envp[index++] = make_string (buf);
-  sprintf (buf, "REQUEST_URI=%s", request_uri);
+  snprintf (buf, MAXLEN, "REQUEST_URI=%s", request_uri);
   envp[index++] = make_string (buf);
-  sprintf (buf, "REMOTE_ADDR=%s", hh->client_ip);
+  snprintf (buf, MAXLEN, "REMOTE_ADDR=%s", hh->client_ip);
   envp[index++] = make_string (buf);
-  sprintf (buf, "SERVER_PORT=%d", hh->server_port);
+  snprintf (buf, MAXLEN, "SERVER_PORT=%d", hh->server_port);
   envp[index++] = make_string (buf);
-  sprintf (buf, "QUERY_STRING=%s", query_string);
+  snprintf (buf, MAXLEN, "QUERY_STRING=%s", query_string);
   envp[index++] = make_string (buf);
-  sprintf (buf, "SCRIPT_NAME=%s", script_name);
+  snprintf (buf, MAXLEN, "SCRIPT_NAME=%s", script_name);
   envp[index++] = make_string (buf);
-  sprintf (buf, "CONTENT_LENGTH=%zd", hh->request.content_length);
+  snprintf (buf, MAXLEN, "CONTENT_LENGTH=%zd", hh->request.content_length);
   envp[index++] = make_string (buf);
 
 
@@ -765,45 +785,45 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
     {
       if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "CONTENT-TYPE"))
 	{
-	  sprintf (buf, "CONTENT_TYPE=%s", headers[i][HTTP_HEADER_VALUE]);
+	  snprintf (buf, MAXLEN, "CONTENT_TYPE=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCEPT"))
 	{
-	  sprintf (buf, "HTTP_ACCEPT=%s", headers[i][HTTP_HEADER_VALUE]);
+	  snprintf (buf, MAXLEN, "HTTP_ACCEPT=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "REFERER"))
 	{
-	  sprintf (buf, "HTTP_REFERER=%s", headers[i][HTTP_HEADER_VALUE]);
+	  snprintf (buf, MAXLEN, "HTTP_REFERER=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCEPT-ENCODING"))
 	{
-	  sprintf (buf, "HTTP_ACCEPT_ENCODING=%s",
+	  snprintf (buf, MAXLEN, "HTTP_ACCEPT_ENCODING=%s",
 		   headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCPET-LANGUAGE"))
 	{
-	  sprintf (buf, "HTTP_ACCEPT_LANGUAGE=%s",
+	  snprintf (buf, MAXLEN, "HTTP_ACCEPT_LANGUAGE=%s",
 		   headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCEPT-CHARSET"))
 	{
-	  sprintf (buf, "HTTP_ACCEPT_CHARSET=%s",
+	  snprintf (buf, MAXLEN, "HTTP_ACCEPT_CHARSET=%s",
 		   headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "COOKIE"))
 	{
-	  sprintf (buf, "HTTP_COOKIE=%s", headers[i][HTTP_HEADER_VALUE]);
+	  snprintf (buf, MAXLEN, "HTTP_COOKIE=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "USER-AGENT"))
 	{
-	  sprintf (buf, "HTTP_USER_AGENT=%s", headers[i][HTTP_HEADER_VALUE]);
+	  snprintf (buf, MAXLEN, "HTTP_USER_AGENT=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "CONNECTION"))
@@ -812,7 +832,7 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "HOST"))
 	{
-	  sprintf (buf, "HTTP_HOST=%s", headers[i][HTTP_HEADER_VALUE]);
+	  snprintf (buf, MAXLEN, "HTTP_HOST=%s", headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
     }

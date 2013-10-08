@@ -24,8 +24,6 @@
 #include <time.h>
 #include <openssl/ssl.h>
 
-static const int BACKLOG = 10;
-static const int MAXCLIENTS = 100;
 static const char SERVER_ERROR_MSG[] =
   "HTTP/1.1 500 Internal Server Error\r\n"
   "Server: Lisod 1.0\r\n" "Vary: Accept-Encoding\r\n"
@@ -42,6 +40,7 @@ static const char SERVER_ERROR_MSG[] =
   "server administrator, webmaster@localhost and inform them of the "
   "time the error occurred, and anything you might have done that may "
   "have caused the error.</p><hr><address>Lisod 1.0</address></body></html>";
+static const ssize_t SERVER_ERROR_MSG_LEN = sizeof (SERVER_ERROR_MSG) - 1;
 
 
 static int lisod_setup (char *cmd, char *http_port, char *https_port,
@@ -351,7 +350,7 @@ on_ready ()
 	    }
 	}
       if ((pipe >= 0) && FD_ISSET (pipe, &G.read_ready_set))
-        {
+	{
 	  G.num_ready--;
 	  if (on_read_pipe () < 0)
 	    {
@@ -377,8 +376,9 @@ on_read_sock ()
 {
   int cgi_pipe, cgi_pid;
   char buf[LISOD_MAXLEN];
-  ssize_t readret, nparsed;
+  ssize_t readret, handled_len;
   client_t *client;
+  enum http_connection_state conn_state;
 
   if (G.client_curr->has_job)
     return 0;
@@ -394,34 +394,57 @@ on_read_sock ()
   if (readret > 0)
     {
       cgi_pipe = -1;
-      nparsed = http_handle_execute (client->http_handle,
-				     buf, readret,
-				     client->send_buf, &cgi_pipe, &cgi_pid);
-      if (nparsed < 0)
+      conn_state = http_handle_execute (client->http_handle,
+					buf, readret,
+					&handled_len,
+					client->send_buf, &cgi_pipe,
+					&cgi_pid);
+      switch (conn_state)
 	{
-	  log (G.log, "INFO", "%s:%-5d - bad reqeust, will flush_close",
-	       client->ip, client->port);
-	  client->flush_close = true;
-	  FD_CLR (client->sock_fd, &G.read_set);	/* no recv but write to */
-	}
-      else			/* buffer unparsed request bytes */
-	{
-	  if (fifo_in (client->recv_buf, buf + nparsed, readret - nparsed) <
-	      0)
-	    {
-	      log (G.log, "ERROR", "fifo_in error");
-	      client_close (client);
-	      return -1;
-	    }
-	}
-      if (cgi_pipe >= 0)	/* got cgi pipe as response: dynamic content */
-	{
-	  client->has_job = true;
-	  client->cgi_pipe = cgi_pipe;
-	  client->cgi_pid = cgi_pid;
-	  FD_SET (cgi_pipe, &G.read_set);
-          if (cgi_pipe > G.max_fd)
-            G.max_fd = cgi_pipe;
+	case HCS_CONNECTION_CLOSE_BAD_REQUEST:	/* no recv still flush send_buf */
+	  {
+	    log (G.log, "INFO", "%s:%-5d - bad request, will close",
+		 client->ip, client->port);
+	  } /* fall through to flush close procedure */
+	case HCS_CONNECTION_CLOSE_FINISHED: /* no recv still flush send_buf */
+	  {
+	    client->flush_close = true;
+	    FD_CLR (client->sock_fd, &G.read_set);
+	    break;
+	  }
+	case HCS_CONNECTION_CLOSE_INTERNAL_ERROR: /* no recv, flush server defined res */
+	  {
+	    log (G.log, "INFO", "%s:%-5d - internal error", client->ip,
+		 client->port);
+	    FD_CLR (client->sock_fd, &G.read_set); /* no recv but write to */
+	    client->use_internal_error_buf = true;
+	    client->internal_error_buf_ptr = SERVER_ERROR_MSG;
+	    client->internal_error_buf_to_write_len = SERVER_ERROR_MSG_LEN;
+	    break;
+	  }
+	case HCS_CONNECTION_ALIVE:
+	  {
+	    if (fifo_in
+		(client->recv_buf, buf + handled_len,
+		 readret - handled_len) < 0)
+	      {
+		log (G.log, "ERROR", "fifo_in error");
+		client_close (client);
+		return -1;
+	      }
+	    if (cgi_pipe >= 0)	/* got cgi pipe as response: dynamic content */
+	      {
+		client->has_job = true;
+		client->cgi_pipe = cgi_pipe;
+		client->cgi_pid = cgi_pid;
+		FD_SET (cgi_pipe, &G.read_set);
+		if (cgi_pipe > G.max_fd)
+		  G.max_fd = cgi_pipe;
+	      }
+	  }
+	  break;
+	default:
+	  break;
 	}
       return 0;
     }
@@ -497,32 +520,49 @@ on_write ()
 
   client = G.client_curr;
 
-  /* for TCP only, ssl need other recv method */
-
   if (fifo_len (client->send_buf) == 0)
     return 0;
 
-  if (client->ssl_context)
-    writeret = SSL_write (client->ssl_context, fifo_head (client->send_buf),
-			  fifo_len (client->send_buf));
+  time (&client->last_activity);
+
+  if (!client->use_internal_error_buf)
+    {
+
+      if (client->ssl_context)
+	writeret =
+	  SSL_write (client->ssl_context, fifo_head (client->send_buf),
+		     fifo_len (client->send_buf));
+      else
+	writeret = send (client->sock_fd, fifo_head (client->send_buf),
+			 fifo_len (client->send_buf), MSG_NOSIGNAL);
+    }
   else
-    writeret =
-      send (client->sock_fd, fifo_head (client->send_buf),
-	    fifo_len (client->send_buf), MSG_NOSIGNAL);
+    {
+      writeret = send (client->sock_fd, client->internal_error_buf_ptr,
+		       client->internal_error_buf_to_write_len, MSG_NOSIGNAL);
+    }
 
   if (writeret >= 0)
     {
-      fifo_out (client->send_buf, writeret);
-      if (client->flush_close && (fifo_len (client->send_buf) == 0))
+      if (!client->use_internal_error_buf)
 	{
-	  log (G.log, "INFO", "%s:%-5d - flushed ", client->ip, client->port);
-	  client_close (client);
-	  return -1;
+	  fifo_out (client->send_buf, writeret);
+	  if (client->flush_close && (fifo_len (client->send_buf) == 0))
+	    goto flushed_close;
+	  else
+	    return 0;
 	}
       else
 	{
-	  return 0;
+	  client->internal_error_buf_ptr += writeret;
+	  client->internal_error_buf_to_write_len -= writeret;
+	  if (client->internal_error_buf_to_write_len == 0)
+	    goto flushed_close;
 	}
+    flushed_close:
+      log (G.log, "INFO", "%s:%-5d - flushed ", client->ip, client->port);
+      client_close (client);
+      return -1;
     }
   else if (errno == EINTR)
     {
@@ -620,6 +660,9 @@ client_init (int client_sock, const char *client_ip,
   client->flush_close = false;
   time (&client->last_activity);
 
+  client->use_internal_error_buf = false;
+  client->internal_error_buf_ptr = NULL;
+  client->internal_error_buf_to_write_len = 0;
   hh.www_folder = G.www_folder;
   hh.cgi_path = G.cgi_path;
   hh.client_ip = client->ip;
@@ -725,7 +768,7 @@ daemonize (const char *cmd)
     exit (0);
 
   ftruncate (G.lock_file_fd, 0);
-  sprintf (buf, "%ld", (long) getpid ());
+  snprintf (buf, LISOD_MAXLEN, "%ld", (long) getpid ());
   write (G.lock_file_fd, buf, strlen (buf) + 1);
 
   /*
@@ -818,8 +861,7 @@ check_timeout (int sig)
 
       if (time_gone > TIMEOUT)
 	{
-	  log (G.log, "INFO", "%s:%-5d timed out",
-	       client->ip, client->port);
+	  log (G.log, "INFO", "%s:%-5d timed out", client->ip, client->port);
 	  client_close (client);
 	  G.clients[i] = NULL;
 	}

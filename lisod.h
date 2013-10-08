@@ -12,12 +12,13 @@
 #ifdef DEBUG
 #define TIMEOUT 1000
 #else
-#define TIMEOUT 5
+#define TIMEOUT 10
 #endif
 
 #define INET_IPLEN INET6_ADDRSTRLEN
 #define INET_PORTLEN 10
 #define LISOD_MAXLEN 0x1000
+#define BACKLOG 50
 
 typedef struct
 {
@@ -37,6 +38,10 @@ typedef struct
   fifo_t *pipe_buf;		/* buffer cgi output to parse CGI Status -> HTTP Status */
   fifo_t *send_buf;
   bool flush_close;		/* not read any more as bad requst but send error msg */
+
+  bool use_internal_error_buf;
+  const char *internal_error_buf_ptr;
+  ssize_t internal_error_buf_to_write_len;
 
   time_t last_activity;		/* used for conn time out auto close */
 } client_t;

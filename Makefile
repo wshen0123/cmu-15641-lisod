@@ -6,7 +6,7 @@ ifeq (${DEBUG}, 1)
     CFLAGS=-c -Wall -DDEBUG -g
     LDFLAGS=-Wall -g
 else
-    CFLAGS=-c -Wall -o1
+    CFLAGS=-c -Wall -o3
     LDFLAGS=-Wall
 endif
 

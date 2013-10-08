@@ -3,9 +3,9 @@
 #include "fifo.h"
 
 fifo_t *
-fifo_init (size_t len_init)
+fifo_init (ssize_t len_init)
 {
-  size_t size_temp;
+  ssize_t size_temp;
 
   if (len_init > 0)
     size_temp = (len_init / FIFO_BLOCKLEN + 1) * FIFO_BLOCKLEN;
@@ -35,7 +35,7 @@ fifo_head (fifo_t * fifo)
 }
 
 
-size_t
+ssize_t
 fifo_len (fifo_t * fifo)
 {
   return fifo->len;
@@ -44,7 +44,7 @@ fifo_len (fifo_t * fifo)
 
 
 int
-fifo_in (fifo_t * fifo, const char *in_data, size_t in_len)
+fifo_in (fifo_t * fifo, const char *in_data, ssize_t in_len)
 {
   char *bytes_temp;
   ssize_t size_temp;
@@ -83,7 +83,7 @@ fifo_in (fifo_t * fifo, const char *in_data, size_t in_len)
 
 
 void
-fifo_out (fifo_t * fifo, size_t pop_len)
+fifo_out (fifo_t * fifo, ssize_t pop_len)
 {
   char *bytes_temp;
   ssize_t size_temp;
@@ -132,7 +132,7 @@ fifo_out (fifo_t * fifo, size_t pop_len)
 
 
 char *
-fifo_extend (fifo_t * fifo, size_t ext_len)
+fifo_extend (fifo_t * fifo, ssize_t ext_len)
 {
   char *bytes_temp;
   ssize_t size_temp;
