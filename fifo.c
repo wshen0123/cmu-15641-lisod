@@ -132,9 +132,9 @@ fifo_out (fifo_t * fifo, ssize_t pop_len)
 
 
 void
-fifo_flush (fifo_t *fifo)
+fifo_flush (fifo_t * fifo)
 {
-  fifo_out(fifo, fifo_len(fifo));
+  fifo_out (fifo, fifo_len (fifo));
 }
 
 char *

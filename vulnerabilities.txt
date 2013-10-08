@@ -1,0 +1,6 @@
+1. The default client time-out is 5s, if the client intends to
+consume resources, it could just make lots of connections and
+do nothing.
+
+2. There is maximum file descriptors in Linux so SYN attack is
+unavoidable.

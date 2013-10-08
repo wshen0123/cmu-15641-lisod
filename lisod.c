@@ -1,4 +1,5 @@
 #include "lisod.h"
+#include "log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,8 +61,8 @@ static void on_ready ();
 static int on_read_sock ();
 static int on_read_pipe ();
 static int on_write ();
-int on_job_execute ();
-int on_job_done (client_t *client);
+int on_http_execute ();
+int on_cgi_job_done (client_t * client);
 
 static client_t *client_init (int client_sock, const char *client_ip,
 			      unsigned short client_port,
@@ -75,11 +76,12 @@ static in_port_t get_in_port (struct sockaddr *sa);
 typedef void handler_t (int);
 static handler_t *Signal (int signum, handler_t * handler);
 
-static int open_sock (char *port);
+static int open_listen_sock (char *port);
 static int close_sock (int sock);
 
 static void daemonize (const char *cmd);
 static int already_running ();
+bool check_flushed (client_t * client);
 static void check_timeout (int sig);
 
 static int
@@ -111,10 +113,10 @@ lisod_setup (char *cmd,
     }
 
   /* init http sock */
-  G.http_sock = open_sock (http_port);
+  G.http_sock = open_listen_sock (http_port);
   if (G.http_sock < 0)
     {
-      log (G.log, "ERROR", "open_sock(%s): %s", http_port, strerror (errno));
+      log (G.log, LL_ERROR, "open_listen_sock(%s): %s", http_port, strerror (errno));
       lisod_signal_handler (0);
     }
   G.http_port = atoi (http_port);
@@ -126,27 +128,28 @@ lisod_setup (char *cmd,
   G.ssl_context = SSL_CTX_new (TLSv1_server_method ());
   if (!G.ssl_context)
     {
-      log (G.log, "ERROR", "SSL_CTX_new: Error creating SSL context");
+      log (G.log, LL_ERROR, "SSL_CTX_new: Error creating SSL context");
       lisod_signal_handler (0);
     }
   if (SSL_CTX_use_PrivateKey_file (G.ssl_context, private_key_path,
 				   SSL_FILETYPE_PEM) == 0)
     {
-      log (G.log, "ERROR",
+      log (G.log, LL_ERROR,
 	   "SSL_CTX_use_PrivateKey_file: Error associating private key");
       lisod_signal_handler (0);
     }
   if (SSL_CTX_use_certificate_file (G.ssl_context, certificate_path,
 				    SSL_FILETYPE_PEM) == 0)
     {
-      log (G.log, "ERROR",
+      log (G.log, LL_ERROR,
 	   "SSL_CTX_use_certificate_file: Error associating certificate");
       lisod_signal_handler (SIGTERM);
     }
-  G.https_sock = open_sock (https_port);
+  G.https_sock = open_listen_sock (https_port);
   if (G.https_sock < 0)
     {
-      log (G.log, "ERROR", "open_sock(%s): %s", https_port, strerror (errno));
+      log (G.log, LL_ERROR, "open_listen_sock(%s): %s", https_port,
+	   strerror (errno));
       lisod_signal_handler (SIGTERM);
     }
   G.https_port = atoi (https_port);
@@ -164,7 +167,7 @@ lisod_setup (char *cmd,
       G.clients[i] = NULL;
     }
 
-  log (G.log, "INFO", "[lisod pid:%5ld] SETUP", (long) getpid ());
+  log (G.log, LL_INFO, "[lisod pid:%5ld] SETUP", (long) getpid ());
 
   Signal (SIGALRM, check_timeout);
   alarm (TIMEOUT);
@@ -196,7 +199,7 @@ lisod_run ()
 	}
       else
 	{
-	  log (G.log, "ERROR", "select: %s", strerror (errno));
+	  log (G.log, LL_ERROR, "select: %s", strerror (errno));
 	  break;
 	}
     }
@@ -236,8 +239,8 @@ lisod_exit ()
 
   remove (G.lock_file_path);
 
-  log (G.log, "INFO", "[lisod pid:%5ld] Remove Lock file", (long) getpid ());
-  log (G.log, "INFO", "[lisod pid:%5ld] SHUTDOWN", (long) getpid ());
+  log (G.log, LL_INFO, "[lisod pid:%5ld] Remove Lock file", (long) getpid ());
+  log (G.log, LL_INFO, "[lisod pid:%5ld] SHUTDOWN", (long) getpid ());
 
   log_exit (G.log);
 
@@ -258,27 +261,26 @@ on_SIGCHLD ()
       client = client_find_by_cgi_pid (pid);
       if (client)
 	{
-	  log (G.log, "INFO", "cgi(pid:%ld) exit(%d)", (long) getpid (),
+	  log (G.log, LL_INFO, "cgi(pid:%ld) exit(%d)", (long) getpid (),
 	       WEXITSTATUS (status));
 
 	  if (fifo_in
 	      (client->send_buf, SERVER_ERROR_MSG,
 	       strlen (SERVER_ERROR_MSG)) < 0)
 	    {
-	      log (G.log, "ERROR", "fifo_in error");
+	      log (G.log, LL_ERROR, "fifo_in error");
 	      client_close (client);
 	    }
-
-          log(G.log, "DEBUG", "%s:%-5d - no recv anymore (cgi error)",
-              client->ip, client->port);
-	  FD_CLR (client->sock_fd, &G.read_set);
+	  log (G.log, LL_INFO, "%s:%-5d - cgi error, will shutdown",
+	       client->ip, client->port);
 	  client->shut_down = true;
+	  FD_CLR (client->sock_fd, &G.read_set);
 	}
     }
   while (pid > 0);
 
   if (errno != ECHILD)
-    log (G.log, "ERROR", "waitpid error");
+    log (G.log, LL_ERROR, "waitpid error");
 }
 
 void
@@ -298,14 +300,14 @@ on_accept (int server_sock)
 			&cli_size);
   if (client_sock < 0)
     {
-      log (G.log, "ERROR", "accept: %s", strerror (errno));
+      log (G.log, LL_ERROR, "accept: %s", strerror (errno));
       return;
     }
   inet_ntop (client_addr.ss_family,
 	     get_in_addr ((struct sockaddr *) &client_addr),
 	     client_ip, sizeof (client_ip));
   client_port = ntohs (get_in_port ((struct sockaddr *) &client_addr));
-  log (G.log, "INFO", "%s:%-5d + connected", client_ip, client_port);
+  log (G.log, LL_INFO, "%s:%-5d + connected", client_ip, client_port);
 
   /* add client(fd) to pool */
   server_port = (server_sock == G.http_sock ? G.http_port : G.https_port);
@@ -313,17 +315,17 @@ on_accept (int server_sock)
   client = client_init (client_sock, client_ip, client_port, server_port);
   if (!client)
     {
-      log (G.log, "ERROR", "client_new:%s", strerror (errno));
+      log (G.log, LL_ERROR, "client_new:%s", strerror (errno));
       close_sock (client_sock);
       return;
     }
   if (client_add (client))
     {
-      log (G.log, "ERROR", "client_add: client pool full");
+      log (G.log, LL_ERROR, "client_add: client pool full");
       if (fifo_in
 	  (client->send_buf, SERVER_ERROR_MSG, strlen (SERVER_ERROR_MSG)) < 0)
 	{
-	  log (G.log, "ERROR", "fifo_in error");
+	  log (G.log, LL_ERROR, "fifo_in error");
 	  client_close (client);
 	}
 
@@ -368,7 +370,7 @@ on_ready ()
 	    }
 	}
 
-      on_job_execute ();
+      on_http_execute ();
 
       if (FD_ISSET (sock, &G.write_ready_set))
 	{
@@ -380,20 +382,13 @@ on_ready ()
 	    }
 	}
 
-      if (client->shut_down && !client->has_job_undone)
-        {
-          if ( (   client->use_internal_error_buf
-                 && client->internal_error_buf_to_write_len == 0
-               )
-              ||
-               (   fifo_len (client->recv_buf) == 0
-                && fifo_len (client->send_buf) == 0))
-            {
-              log (G.log, "INFO", "%s:%-5d - flushed ", client->ip, client->port);
-              client_close (client);
-              G.clients[i] = NULL;
-            }
-        }
+      if (check_flushed (client))
+	{
+	  log (G.log, LL_INFO, "%s:%-5d - flushed ", client->ip,
+	       client->port);
+	  client_close (client);
+	  G.clients[i] = NULL;
+	}
       continue;
     }
 }				/*  end of on_ready */
@@ -416,13 +411,13 @@ on_read_sock ()
   if (readret > 0)
     {
 #ifdef DEBUG
-      memcpy(DEBUG_BUF, buf, readret);
+      memcpy (DEBUG_BUF, buf, readret);
       DEBUG_BUF[readret] = '\0';
-      log (G.log, "DEBUG", "%s:%-5d - on_read_sock: \n%s",
-           client->ip, client->port, DEBUG_BUF);
+      log (G.log, LL_DEBUG, "%s:%-5d - on_read_sock: \n%s",
+	   client->ip, client->port, DEBUG_BUF);
 #endif
       if (fifo_in (client->recv_buf, buf, readret) < 0)
-        return -1;
+	return -1;
       return 0;
     }
   else if (errno == EINTR)
@@ -433,14 +428,14 @@ on_read_sock ()
     {
       client->shut_down = true;
       FD_CLR (client->sock_fd, &G.read_set);
-      log(G.log, "DEBUG", "%s:%-5d - no recv anymore (recv shutdown)",
-          client->ip, client->port);
+      log (G.log, LL_INFO, "%s:%-5d - client shutdown",
+	   client->ip, client->port);
       return 0;
     }
   else
     {
-      log (G.log, "INFO", "%s:%-5d - read error %s", client->ip, client->port,
-	   strerror (errno));
+      log (G.log, LL_INFO, "%s:%-5d - read error %s", client->ip,
+	   client->port, strerror (errno));
       client_close (client);
       return -1;
     }
@@ -462,7 +457,7 @@ on_read_pipe ()
     {
       if (fifo_in (client->pipe_buf, buf, readret) < 0)
 	{
-	  log (G.log, "ERROR", "fifo_in error");
+	  log (G.log, LL_ERROR, "fifo_in error");
 	  client_close (client);
 	  return -1;
 	}
@@ -470,7 +465,7 @@ on_read_pipe ()
     }
   else if (readret == 0)	/* job finished */
     {
-      return on_job_done (client);
+      return on_cgi_job_done (client);
     }
   else if (errno == EINTR)
     {
@@ -478,7 +473,7 @@ on_read_pipe ()
     }
   else
     {
-      log (G.log, "INFO", "[pipe] read error %s", strerror (errno));
+      log (G.log, LL_INFO, "[pipe] read error %s", strerror (errno));
       client_close (client);
       return -1;
     }
@@ -520,9 +515,10 @@ on_write ()
       if (!client->use_internal_error_buf)
 	{
 #ifdef DEBUG
-          memcpy(DEBUG_BUF, fifo_head(client->send_buf), writeret);
-          DEBUG_BUF[writeret] = '\0';
-          log (G.log, "DEBUG", "%s:%-5d - on_write: \n%s", client->ip, client->port, DEBUG_BUF);
+	  memcpy (DEBUG_BUF, fifo_head (client->send_buf), writeret);
+	  DEBUG_BUF[writeret] = '\0';
+	  log (G.log, LL_DEBUG, "%s:%-5d - on_write: \n%s", client->ip,
+	       client->port, DEBUG_BUF);
 #endif
 	  fifo_out (client->send_buf, writeret);
 	  return 0;
@@ -531,7 +527,7 @@ on_write ()
 	{
 	  client->internal_error_buf_ptr += writeret;
 	  client->internal_error_buf_to_write_len -= writeret;
-          return 0;
+	  return 0;
 	}
       return 0;
     }
@@ -541,7 +537,7 @@ on_write ()
     }
   else
     {
-      log (G.log, "INFO", "%s:%-5d - write error %s", client->ip,
+      log (G.log, LL_INFO, "%s:%-5d - write error %s", client->ip,
 	   client->port, strerror (errno));
       client_close (client);
       return -1;
@@ -550,40 +546,42 @@ on_write ()
 
 
 int
-on_job_execute ()
+on_http_execute ()
 {
   int cgi_pipe, cgi_pid;
   enum http_connection_state conn_state;
-  client_t * client;
+  client_t *client;
 
   client = G.client_curr;
 
   if (client->has_job_undone || (fifo_len (client->recv_buf) == 0))
     return 0;
 
-  log(G.log, "DEBUG", "%s:%-5d - on_job_execute", client->ip, client->port);
+  log (G.log, LL_DEBUG, "%s:%-5d - on_http_execute", client->ip, client->port);
 
   cgi_pipe = -1;
   cgi_pid = -1;
   conn_state = http_handle_execute (client->http_handle,
 				    client->recv_buf,
-				    client->send_buf,
-                                    &cgi_pipe, &cgi_pid);
+				    client->send_buf, &cgi_pipe, &cgi_pid);
   switch (conn_state)
     {
-    case HCS_CONNECTION_CLOSE_BAD_REQUEST:	/* no recv still flush send_buf */
+    case HCS_CONNECTION_CLOSE_BAD_REQUEST:
       {
-	log (G.log, "INFO", "%s:%-5d - bad request, will close",
+	log (G.log, LL_INFO, "%s:%-5d - bad request, will close",
 	     client->ip, client->port);
+	client->shut_down = true;
+	FD_CLR (client->sock_fd, &G.read_set);
+        break;
       }				/* fall through to flush close procedure */
-    case HCS_CONNECTION_CLOSE_FINISHED:	/* no recv still flush send_buf */
+    case HCS_CONNECTION_CLOSE_FINISHED:	
       {
 	client->shut_down = true;
 	FD_CLR (client->sock_fd, &G.read_set);
-        log(G.log, "DEBUG", "%s:%-5d - no recv anymore (close finished)",
-            client->ip, client->port);
+	log (G.log, LL_INFO, "%s:%-5d - connection: close",
+	     client->ip, client->port);
 
-	if (cgi_pipe >= 0)	/* got cgi pipe as response: dynamic content */
+	if (cgi_pipe >= 0)
 	  {
 	    client->has_job_undone = true;
 	    client->cgi_pipe = cgi_pipe;
@@ -594,12 +592,10 @@ on_job_execute ()
 	  }
 	break;
       }
-    case HCS_CONNECTION_CLOSE_INTERNAL_ERROR:	/* no recv, flush server defined res */
+    case HCS_CONNECTION_CLOSE_INTERNAL_ERROR:
       {
-	log (G.log, "INFO", "%s:%-5d - internal error", client->ip,
-	     client->port);
-        log(G.log, "DEBUG", "%s:%-5d - no recv anymore (close internal error)",
-            client->ip, client->port);
+	log (G.log, LL_INFO, "%s:%-5d - internal error, will shutdown client",
+             client->ip, client->port);
 	FD_CLR (client->sock_fd, &G.read_set);	/* no recv but write to */
 	client->use_internal_error_buf = true;
 	client->internal_error_buf_ptr = SERVER_ERROR_MSG;
@@ -626,9 +622,9 @@ on_job_execute ()
 }
 
 int
-on_job_done (client_t *client)
+on_cgi_job_done (client_t * client)
 {
-  log(G.log, "DEBUG", "on_job_done: %d", client->port);
+  log (G.log, LL_DEBUG, "on_cgi_job_done: %d", client->port);
   http_cgi_finish_callback (client->send_buf, client->pipe_buf);
   fifo_out (client->pipe_buf, fifo_len (client->pipe_buf));
 
@@ -680,20 +676,20 @@ client_init (int client_sock, const char *client_ip,
       client->ssl_context = SSL_new (G.ssl_context);
       if (!client->ssl_context)
 	{
-	  log (G.log, "ERROR", "SSL_new: Error creating client SSL context");
+	  log (G.log, LL_ERROR, "SSL_new: Error creating client SSL context");
 	  goto ssl_error;
 	}
       if (SSL_set_fd (client->ssl_context, client_sock) == 0)
 	{
 	  SSL_free (client->ssl_context);
-	  log (G.log, "ERROR",
+	  log (G.log, LL_ERROR,
 	       "SSL_set_fd: Error creating client SSL context");
 	  goto ssl_error;
 	}
       if (SSL_accept (client->ssl_context) <= 0)
 	{
 	  SSL_free (client->ssl_context);
-	  log (G.log, "ERROR",
+	  log (G.log, LL_ERROR,
 	       "SSL_accept: Error accepting (handshake) client SSL context");
 	  goto ssl_error;
 	}
@@ -737,7 +733,7 @@ client_init (int client_sock, const char *client_ip,
   return client;
 
 fifo_error:
-  log (G.log, "ERROR", "fifo_init error");
+  log (G.log, LL_ERROR, "fifo_init error");
   SSL_free (client->ssl_context);
 
 ssl_error:
@@ -778,7 +774,7 @@ client_close (client_t * client)
       FD_CLR (client->sock_fd, &G.read_set);
       FD_CLR (client->sock_fd, &G.write_set);
       close_sock (client->sock_fd);
-      log (G.log, "INFO", "%s:%-5d - closed", client->ip, client->port);
+      log (G.log, LL_INFO, "%s:%-5d - closed", client->ip, client->port);
     }
   if (client->cgi_pipe >= 0)
     {
@@ -899,11 +895,27 @@ Signal (int signum, handler_t * handler)
 
   if (sigaction (signum, &action, &old_action) < 0)
     {
-      log (G.log, "ERROR", "Signal: %s", strerror (errno));
+      log (G.log, LL_ERROR, "Signal: %s", strerror (errno));
       exit (EXIT_FAILURE);
     }
   return (old_action.sa_handler);
-}				/* end of Signal */
+}
+
+bool
+check_flushed (client_t * client)
+{
+
+  if (client->shut_down && !client->has_job_undone)
+    {
+      if (client->use_internal_error_buf
+	  && client->internal_error_buf_to_write_len == 0)
+	return true;
+      else if
+	(fifo_len (client->recv_buf) == 0 && fifo_len (client->send_buf) == 0)
+	return true;
+    }
+  return false;
+}
 
 void
 check_timeout (int sig)
@@ -923,7 +935,7 @@ check_timeout (int sig)
 
       if (time_gone > TIMEOUT)
 	{
-	  log (G.log, "INFO", "%s:%-5d timed out", client->ip, client->port);
+	  log (G.log, LL_INFO, "%s:%-5d timed out", client->ip, client->port);
 	  client_close (client);
 	  G.clients[i] = NULL;
 	}
@@ -931,16 +943,8 @@ check_timeout (int sig)
   alarm (TIMEOUT);
 }
 
-
-/**
- * @brief       open server socket, bind to @port and listen 
- *
- * @param       port
- *
- * @return      server socket file descriptor
- */
 int
-open_sock (char *port)
+open_listen_sock (char *port)
 {
   int yes = 1, sock;
   struct addrinfo hints, *servinfo, *p;
@@ -981,14 +985,14 @@ open_sock (char *port)
       return -1;
     }
   return sock;
-}				/* end of open_sock */
+}				/* end of open_listen_sock */
 
 int
 close_sock (int sock)
 {
   if (close (sock))
     {
-      log (G.log, "ERROR", "close: %s", strerror (errno));
+      log (G.log, LL_ERROR, "close: %s", strerror (errno));
       return 1;
     }
   return 0;

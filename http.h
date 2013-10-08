@@ -21,7 +21,7 @@ enum http_connection_state
 };
 
 /* forward state(next anticipated state) */
-enum http_state
+enum http_parser_state
 {
   S_START = 0,
 
@@ -93,7 +93,7 @@ enum http_version
  * only called by http_parser_execute/reset */
 typedef struct
 {
-  enum http_state state;
+  enum http_parser_state state;
 
   size_t header_len;
   size_t body_len;

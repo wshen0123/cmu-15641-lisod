@@ -1,0 +1,9 @@
+1. valid http request test, including persistent/pipelined with
+broswer and python script and curl/netcat.
+2. invalid request like one with too long header/uri, or request
+containing invalid token.
+3. timeout test.
+4. Apache Bench load test with -kc 800 -n 100000, passed if kernel
+is not dropping packets (or will return 104 RST error).
+5. valgrind test to ensure no memory leakage, no uninitialized
+memory read and no doule free, etc.

@@ -77,9 +77,9 @@ static int http_do_response_error (http_handle_t * hh, fifo_t * send_buf);
 
 ssize_t http_parser_execute (http_handle_t * h, char *request,
 			     ssize_t req_len);
-enum http_status http_parser_on_request_line (http_request_t * req,
+enum http_status http_parser_requestline_callback (http_request_t * req,
 					      const char *buf);
-enum http_status http_parser_on_header_line (http_request_t * req,
+enum http_status http_parser_header_callback (http_request_t * req,
 					     const char *buf);
 
 static void http_handle_reset (http_handle_t * h);
@@ -119,14 +119,14 @@ http_handle_init (http_setting_t * setting)
 
 enum http_connection_state
 http_handle_execute (http_handle_t * hh,
-                     fifo_t * recv_buf,
-		     fifo_t * send_buf,
-                     int *pipe_fd, pid_t * cgi_pid)
+		     fifo_t * recv_buf,
+		     fifo_t * send_buf, int *pipe_fd, pid_t * cgi_pid)
 {
   ssize_t handled_len;
 
-  handled_len = http_parser_execute (hh, fifo_head(recv_buf), fifo_len(recv_buf));
-  fifo_out(recv_buf, handled_len);
+  handled_len =
+    http_parser_execute (hh, fifo_head (recv_buf), fifo_len (recv_buf));
+  fifo_out (recv_buf, handled_len);
 
   if (PARSING_INCOMPLETE (hh->parser.state))
     {
@@ -139,7 +139,7 @@ http_handle_execute (http_handle_t * hh,
       return HCS_CONNECTION_CLOSE_INTERNAL_ERROR;
     }
 
-  if (hh->parser.state == S_DEAD)
+  if (hh->status == SC_400_BAD_REQUEST)
     {
       fifo_flush (recv_buf);
       return HCS_CONNECTION_CLOSE_BAD_REQUEST;
@@ -148,15 +148,15 @@ http_handle_execute (http_handle_t * hh,
   if (hh->parser.state == S_DONE)
     {
       if (hh->request.keep_alive)
-        {
-          http_handle_reset (hh);
-          return HCS_CONNECTION_ALIVE;
-        }
+	{
+	  http_handle_reset (hh);
+	  return HCS_CONNECTION_ALIVE;
+	}
       else
-        {
-          fifo_flush (recv_buf);
-          return HCS_CONNECTION_CLOSE_FINISHED;
-        }
+	{
+	  fifo_flush (recv_buf);
+	  return HCS_CONNECTION_CLOSE_FINISHED;
+	}
     }
   return HCS_CONNECTION_ALIVE;
 }
@@ -205,11 +205,13 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
   char c, *buf, *mbuf;
   const char *p, *pe;
   size_t to_read, header_len, body_len, buf_index;
-  enum http_state state;
+  enum http_parser_state state;
+  enum http_status status;
   http_parser_t *parser;
 
   parser = &hh->parser;
   state = parser->state;
+  status = hh->status;
   header_len = parser->header_len;
   body_len = parser->body_len;
   buf = parser->buf;
@@ -224,7 +226,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	  if (header_len > HTTP_HEADER_MAXLEN)
 	    {
 	      state = S_DEAD;
-	      hh->status = SC_413_REQUEST_ENTITY_TOO_LARGE;
+	      status = SC_413_REQUEST_ENTITY_TOO_LARGE;
 	    }
 	}
 
@@ -239,8 +241,8 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	      break;
 	    }
 	  buf[buf_index] = '\0';
-	  hh->status = http_parser_on_request_line (&hh->request, buf);
-	  if (ERROR_STATUS (hh->status))
+	  status = http_parser_requestline_callback (&hh->request, buf);
+	  if (ERROR_STATUS (status))
 	    state = S_DEAD;
 	  else
 	    state = S_REQUEST_LINE_LF;
@@ -251,6 +253,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	  if (c != LF)
 	    {
 	      state = S_DEAD;
+	      status = SC_400_BAD_REQUEST;
 	      break;
 	    }
 
@@ -267,8 +270,8 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	  buf[buf_index] = '\0';
 	  if (buf_index > 0)
 	    {
-	      hh->status = http_parser_on_header_line (&hh->request, buf);
-	      if (ERROR_STATUS (hh->status))
+	      status = http_parser_header_callback (&hh->request, buf);
+	      if (ERROR_STATUS (status))
 		state = S_DEAD;
 	      else
 		state = S_HEADER_LINE_LF;
@@ -284,6 +287,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	  if (c != LF)
 	    {
 	      state = S_DEAD;
+	      status = SC_400_BAD_REQUEST;
 	      break;
 	    }
 	  state = S_HEADER_LINE;
@@ -293,6 +297,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	  if (c != LF)
 	    {
 	      state = S_DEAD;
+	      status = SC_400_BAD_REQUEST;
 	      break;
 	    }
 	  if (HAS_BODY (hh->request.method))
@@ -304,7 +309,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	      else
 		{
 		  state = S_DEAD;
-		  hh->status = SC_411_LENGTH_REQUIRED;
+		  status = SC_411_LENGTH_REQUIRED;
 		}
 	    }
 	  else
@@ -323,9 +328,9 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 		}
 	      else
 		{
-		  hh->status = SC_500_SERVER_INTERNAL_ERROR;
+		  status = SC_500_SERVER_INTERNAL_ERROR;
 		  state = S_DEAD;
-		  log (hh->log, "ERROR", "malloc: %s", strerror (errno));
+		  log (hh->log, LL_ERROR, "malloc: %s", strerror (errno));
 		}
 	    }
 
@@ -352,6 +357,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	break;
     }				/* end of for */
   parser->state = state;
+  hh->status = status;
   parser->header_len = header_len;
   parser->buf_index = buf_index;
 
@@ -360,7 +366,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 
 
 enum http_status
-http_parser_on_request_line (http_request_t * req, const char *request_line)
+http_parser_requestline_callback (http_request_t * req, const char *request_line)
 {
   char method[HTTP_HEADER_MAXLEN] = "";
   char uri[HTTP_HEADER_MAXLEN] = "";
@@ -400,7 +406,7 @@ http_parser_on_request_line (http_request_t * req, const char *request_line)
 }
 
 enum http_status
-http_parser_on_header_line (http_request_t * req, const char *header_line)
+http_parser_header_callback (http_request_t * req, const char *header_line)
 {
   const char *p;
   char *cp;
@@ -436,12 +442,12 @@ http_parser_on_header_line (http_request_t * req, const char *header_line)
 	  req->content_length = atoi (value);
 	}
       if (!strcasecmp (name, "CONNECTION"))
-        {
-          if (!strcasecmp (value, "keep-alive"))
-            req->keep_alive = true;
-          else
-            req->keep_alive = false;
-        }
+	{
+	  if (!strcasecmp (value, "keep-alive"))
+	    req->keep_alive = true;
+	  else
+	    req->keep_alive = false;
+	}
     }
   else
     {
@@ -529,8 +535,7 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
     "Server: Lisod/1.0\r\n"
     "Date: %s\r\n"
     "Keep-Alive: timeout=5\r\n"
-    "Content-length: %zd\r\n"
-    "Content-type: %s\r\n\r\n";
+    "Content-length: %zd\r\n" "Content-type: %s\r\n\r\n";
 
   char buf[HTTP_HEADER_MAXLEN],
     file_path[MAXLEN], file_type[MAXLEN], date[MAXLEN], *file_data, *p;
@@ -571,7 +576,8 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
   file_size = sbuf.st_size;
   get_file_type (file_path, file_type);
 
-  snprintf (buf, HTTP_HEADER_MAXLEN, HTTP_RESPONSE_OK, date, file_size, file_type);
+  snprintf (buf, HTTP_HEADER_MAXLEN, HTTP_RESPONSE_OK, date, file_size,
+	    file_type);
 
   /* if has response body */
 
@@ -601,7 +607,7 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
     }
   else
     {
-      log (hh->log, "ERROR",
+      log (hh->log, LL_ERROR,
 	   "http method not implemented, how do we get here?");
       return -1;
     }
@@ -640,8 +646,8 @@ http_do_response_error (http_handle_t * hh, fifo_t * send_buf)
 
   content_length = strlen (html_buf);
 
-  snprintf (res_buf, MAXLEN, HTTP_RESPONSE_ERROR, code, reason, date, content_length,
-	   "text/html");
+  snprintf (res_buf, MAXLEN, HTTP_RESPONSE_ERROR, code, reason, date,
+	    content_length, "text/html");
   strcat (res_buf, html_buf);
 
   if (fifo_in (send_buf, res_buf, strlen (res_buf)) < 0)
@@ -682,7 +688,7 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
 
   if (pid < 0)
     {
-      log (hh->log, "ERROR", "fork: %s", strerror (errno));
+      log (hh->log, LL_ERROR, "fork: %s", strerror (errno));
       return -1;
     }
 
@@ -702,7 +708,7 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
 
       if (execve (ARGV[0], ARGV, ENVP))
 	{
-	  log (hh->log, "ERROR", "execve: %s", strerror (errno));
+	  log (hh->log, LL_ERROR, "execve: %s", strerror (errno));
 	  //TODO add do_http_response_error
 	  exit (EXIT_FAILURE);
 	}
@@ -754,7 +760,8 @@ http_cgi_finish_callback (fifo_t * send_buf, fifo_t * pipe_buf)
 	      break;
 	    }
 	}
-      snprintf (response_line, MAXLEN, HTTP_RESPONSE_LINE, status_code, reason_phrase);
+      snprintf (response_line, MAXLEN, HTTP_RESPONSE_LINE, status_code,
+		reason_phrase);
       fifo_in (send_buf, response_line, strlen (response_line));
     }
   fifo_in (send_buf, fifo_head (pipe_buf), fifo_len (pipe_buf));
@@ -810,45 +817,50 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
     {
       if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "CONTENT-TYPE"))
 	{
-	  snprintf (buf, MAXLEN, "CONTENT_TYPE=%s", headers[i][HTTP_HEADER_VALUE]);
+	  snprintf (buf, MAXLEN, "CONTENT_TYPE=%s",
+		    headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCEPT"))
 	{
-	  snprintf (buf, MAXLEN, "HTTP_ACCEPT=%s", headers[i][HTTP_HEADER_VALUE]);
+	  snprintf (buf, MAXLEN, "HTTP_ACCEPT=%s",
+		    headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "REFERER"))
 	{
-	  snprintf (buf, MAXLEN, "HTTP_REFERER=%s", headers[i][HTTP_HEADER_VALUE]);
+	  snprintf (buf, MAXLEN, "HTTP_REFERER=%s",
+		    headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCEPT-ENCODING"))
 	{
 	  snprintf (buf, MAXLEN, "HTTP_ACCEPT_ENCODING=%s",
-		   headers[i][HTTP_HEADER_VALUE]);
+		    headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCPET-LANGUAGE"))
 	{
 	  snprintf (buf, MAXLEN, "HTTP_ACCEPT_LANGUAGE=%s",
-		   headers[i][HTTP_HEADER_VALUE]);
+		    headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCEPT-CHARSET"))
 	{
 	  snprintf (buf, MAXLEN, "HTTP_ACCEPT_CHARSET=%s",
-		   headers[i][HTTP_HEADER_VALUE]);
+		    headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "COOKIE"))
 	{
-	  snprintf (buf, MAXLEN, "HTTP_COOKIE=%s", headers[i][HTTP_HEADER_VALUE]);
+	  snprintf (buf, MAXLEN, "HTTP_COOKIE=%s",
+		    headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "USER-AGENT"))
 	{
-	  snprintf (buf, MAXLEN, "HTTP_USER_AGENT=%s", headers[i][HTTP_HEADER_VALUE]);
+	  snprintf (buf, MAXLEN, "HTTP_USER_AGENT=%s",
+		    headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "CONNECTION"))
@@ -857,7 +869,8 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "HOST"))
 	{
-	  snprintf (buf, MAXLEN, "HTTP_HOST=%s", headers[i][HTTP_HEADER_VALUE]);
+	  snprintf (buf, MAXLEN, "HTTP_HOST=%s",
+		    headers[i][HTTP_HEADER_VALUE]);
 	  envp[index++] = make_string (buf);
 	}
     }

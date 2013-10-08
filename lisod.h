@@ -12,7 +12,7 @@
 #ifdef DEBUG
 #define TIMEOUT 1000
 #else
-#define TIMEOUT 10
+#define TIMEOUT 5
 #endif
 
 #define INET_IPLEN INET6_ADDRSTRLEN

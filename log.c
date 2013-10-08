@@ -12,12 +12,24 @@
 
 static char LOG_MSG_BUF[LOG_MSG_MAXLEN];
 static char LOG_TIMESTAMP_BUF[LOG_TIMESTAMP_MAXLEN];
+static char *LOG_LEVEL_TABLE[] = {
+  [LL_DEBUG] = "DEBUG",
+  [LL_INFO] = "INFO",
+  [LL_ERROR] = "ERROR",
+};
 
 void
-_log (log_t * logger, const char *level, const char *fmt, ...)
+_log (log_t * logger, enum log_level level, const char *fmt, ...)
 {
   va_list va_arg;
-  time_t now = time (0);
+  time_t now;
+
+#ifndef DEBUG
+  if (level == LL_DEBUG)
+    return;
+#endif
+
+  now = time (0);
 
   if (logger)
     {
@@ -25,8 +37,8 @@ _log (log_t * logger, const char *level, const char *fmt, ...)
       strftime (LOG_TIMESTAMP_BUF, LOG_TIME_BUF_SIZE, "%Y-%m-%d %H:%M:%S",
 		localtime (&now));
       vsnprintf (LOG_MSG_BUF, LOG_MSG_MAXLEN, fmt, va_arg);
-      fprintf (logger->log_file, "[%s] %-5s %s\n", LOG_TIMESTAMP_BUF, level,
-	       LOG_MSG_BUF);
+      fprintf (logger->log_file, "[%s] %-5s %s\n", LOG_TIMESTAMP_BUF,
+	       LOG_LEVEL_TABLE[level], LOG_MSG_BUF);
       va_end (va_arg);
     }
 }
