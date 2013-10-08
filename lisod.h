@@ -26,7 +26,7 @@ typedef struct
   SSL *ssl_context;
 
   /* ensure next job won't run until current finishes: pipelining order */
-  bool has_undone_job;			
+  bool has_job_undone;			
   int cgi_pipe;
   int cgi_pid;
 
@@ -39,7 +39,7 @@ typedef struct
   fifo_t *pipe_buf;		/* buffer cgi output to parse CGI Status -> HTTP Status */
   fifo_t *send_buf;             /* buffer lisod response */
 
-  bool flush_close;		/* not read any more as bad requst but send error msg */
+  bool shut_down;		/* not read any more as bad requst but send error msg */
 
   /* backup internal error static buf in case of system resource falure */
   bool use_internal_error_buf;

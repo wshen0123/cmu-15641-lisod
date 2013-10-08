@@ -51,6 +51,7 @@ const http_status_code_reason_phrase status_2_reason[] = {
   [SC_400_BAD_REQUEST] = {400, "Bad Request"},
   [SC_403_FORBIDDEN] = {403, "Forbidden"},
   [SC_404_NOT_FOUND] = {404, "Not Found"},
+  [SC_405_METHOD_NOT_ALLOWED] = {405, "Method Not Allowed"},
   [SC_411_LENGTH_REQUIRED] = {412, "Length Required"},
   [SC_413_REQUEST_ENTITY_TOO_LARGE] = {413, "Request Entity Too Large"},
   [SC_414_REQUEST_URI_TOO_LONG] = {414, "Request URI Too Long"},
@@ -118,21 +119,31 @@ http_handle_init (http_setting_t * setting)
 
 enum http_connection_state
 http_handle_execute (http_handle_t * hh,
-                     char *request, ssize_t req_len,
-                     ssize_t *handled_len,
+                     fifo_t * recv_buf,
 		     fifo_t * send_buf,
                      int *pipe_fd, pid_t * cgi_pid)
 {
-  *handled_len = http_parser_execute (hh, request, req_len);
+  ssize_t handled_len;
+
+  handled_len = http_parser_execute (hh, fifo_head(recv_buf), fifo_len(recv_buf));
+  fifo_out(recv_buf, handled_len);
 
   if (PARSING_INCOMPLETE (hh->parser.state))
-    return HCS_CONNECTION_ALIVE;
+    {
+      return HCS_CONNECTION_ALIVE;
+    }
 
   if (http_do_response (hh, send_buf, pipe_fd, cgi_pid))
-    return HCS_CONNECTION_CLOSE_INTERNAL_ERROR;
+    {
+      fifo_flush (recv_buf);
+      return HCS_CONNECTION_CLOSE_INTERNAL_ERROR;
+    }
 
   if (hh->parser.state == S_DEAD)
-    return HCS_CONNECTION_CLOSE_BAD_REQUEST;
+    {
+      fifo_flush (recv_buf);
+      return HCS_CONNECTION_CLOSE_BAD_REQUEST;
+    }
 
   if (hh->parser.state == S_DONE)
     {
@@ -143,6 +154,7 @@ http_handle_execute (http_handle_t * hh,
         }
       else
         {
+          fifo_flush (recv_buf);
           return HCS_CONNECTION_CLOSE_FINISHED;
         }
     }
@@ -515,7 +527,10 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
   static const char HTTP_RESPONSE_OK[] =
     "HTTP/1.0 200 ok\r\n"
     "Server: Lisod/1.0\r\n"
-    "Date: %s\r\n" "Content-length: %zd\r\n" "Content-type: %s\r\n\r\n";
+    "Date: %s\r\n"
+    "Keep-Alive: timeout=5\r\n"
+    "Content-length: %zd\r\n"
+    "Content-type: %s\r\n\r\n";
 
   char buf[HTTP_HEADER_MAXLEN],
     file_path[MAXLEN], file_type[MAXLEN], date[MAXLEN], *file_data, *p;
@@ -524,6 +539,12 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
   struct stat sbuf;
   time_t now;
   struct tm tm;
+
+  if (hh->request.method == HM_POST)
+    {
+      hh->status = SC_400_BAD_REQUEST;
+      return http_do_response_error (hh, send_buf);
+    }
 
   now = time (0);
   tm = *gmtime (&now);
@@ -554,7 +575,7 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
 
   /* if has response body */
 
-  if (hh->request.method == HM_GET || hh->request.method == HM_POST)
+  if (hh->request.method == HM_GET)
     {
       file_fd = open (file_path, O_RDONLY);
       file_data = mmap (0, file_size, PROT_READ, MAP_PRIVATE, file_fd, 0);

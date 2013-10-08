@@ -19,6 +19,7 @@ ssize_t fifo_len (fifo_t * fifo);
 void fifo_free (fifo_t * fifo);
 int fifo_in (fifo_t * fifo, const char *data, ssize_t data_len);
 void fifo_out (fifo_t * fifo, ssize_t pop_len);
+void fifo_flush (fifo_t * fifo);
 char *fifo_extend (fifo_t * fifo, ssize_t ext_len);
 
 

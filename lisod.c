@@ -24,6 +24,9 @@
 #include <time.h>
 #include <openssl/ssl.h>
 
+#ifdef DEBUG
+static char DEBUG_BUF[LISOD_MAXLEN];
+#endif
 static const char SERVER_ERROR_MSG[] =
   "HTTP/1.1 500 Internal Server Error\r\n"
   "Server: Lisod 1.0\r\n" "Vary: Accept-Encoding\r\n"
@@ -57,6 +60,8 @@ static void on_ready ();
 static int on_read_sock ();
 static int on_read_pipe ();
 static int on_write ();
+int on_job_execute ();
+int on_job_done (client_t *client);
 
 static client_t *client_init (int client_sock, const char *client_ip,
 			      unsigned short client_port,
@@ -264,8 +269,10 @@ on_SIGCHLD ()
 	      client_close (client);
 	    }
 
+          log(G.log, "DEBUG", "%s:%-5d - no recv anymore (cgi error)",
+              client->ip, client->port);
 	  FD_CLR (client->sock_fd, &G.read_set);
-	  client->flush_close = true;
+	  client->shut_down = true;
 	}
     }
   while (pid > 0);
@@ -321,7 +328,7 @@ on_accept (int server_sock)
 	}
 
       FD_SET (client->sock_fd, &G.write_set);
-      client->flush_close = true;
+      client->shut_down = true;
     }
 }				/* end of on_accept */
 
@@ -329,6 +336,7 @@ void
 on_ready ()
 {
   int i, sock, pipe;
+  client_t *client;
 
   for (i = 0; (i <= G.maxi) && (G.num_ready > 0); i++)
     {
@@ -336,8 +344,7 @@ on_ready ()
 	continue;
 
       G.client_curr = G.clients[i];
-
-      on_job_do (G.client_curr);
+      client = G.client_curr;
 
       sock = G.client_curr->sock_fd;
       pipe = G.client_curr->cgi_pipe;
@@ -360,6 +367,9 @@ on_ready ()
 	      continue;
 	    }
 	}
+
+      on_job_execute ();
+
       if (FD_ISSET (sock, &G.write_ready_set))
 	{
 	  G.num_ready--;
@@ -369,6 +379,21 @@ on_ready ()
 	      continue;
 	    }
 	}
+
+      if (client->shut_down && !client->has_job_undone)
+        {
+          if ( (   client->use_internal_error_buf
+                 && client->internal_error_buf_to_write_len == 0
+               )
+              ||
+               (   fifo_len (client->recv_buf) == 0
+                && fifo_len (client->send_buf) == 0))
+            {
+              log (G.log, "INFO", "%s:%-5d - flushed ", client->ip, client->port);
+              client_close (client);
+              G.clients[i] = NULL;
+            }
+        }
       continue;
     }
 }				/*  end of on_ready */
@@ -390,8 +415,15 @@ on_read_sock ()
 
   if (readret > 0)
     {
+#ifdef DEBUG
+      memcpy(DEBUG_BUF, buf, readret);
+      DEBUG_BUF[readret] = '\0';
+      log (G.log, "DEBUG", "%s:%-5d - on_read_sock: \n%s",
+           client->ip, client->port, DEBUG_BUF);
+#endif
       if (fifo_in (client->recv_buf, buf, readret) < 0)
         return -1;
+      return 0;
     }
   else if (errno == EINTR)
     {
@@ -399,8 +431,11 @@ on_read_sock ()
     }
   else if (readret == 0)
     {
-      client_close (client);
-      return -1;
+      client->shut_down = true;
+      FD_CLR (client->sock_fd, &G.read_set);
+      log(G.log, "DEBUG", "%s:%-5d - no recv anymore (recv shutdown)",
+          client->ip, client->port);
+      return 0;
     }
   else
     {
@@ -409,6 +444,7 @@ on_read_sock ()
       client_close (client);
       return -1;
     }
+  return -1;
 }				/* end of on_read_sock */
 
 int
@@ -483,23 +519,21 @@ on_write ()
     {
       if (!client->use_internal_error_buf)
 	{
+#ifdef DEBUG
+          memcpy(DEBUG_BUF, fifo_head(client->send_buf), writeret);
+          DEBUG_BUF[writeret] = '\0';
+          log (G.log, "DEBUG", "%s:%-5d - on_write: \n%s", client->ip, client->port, DEBUG_BUF);
+#endif
 	  fifo_out (client->send_buf, writeret);
-	  if (client->flush_close && (fifo_len (client->send_buf) == 0))
-	    goto flushed_close;
-	  else
-	    return 0;
+	  return 0;
 	}
       else
 	{
 	  client->internal_error_buf_ptr += writeret;
 	  client->internal_error_buf_to_write_len -= writeret;
-	  if (client->internal_error_buf_to_write_len == 0)
-	    goto flushed_close;
+          return 0;
 	}
-    flushed_close:
-      log (G.log, "INFO", "%s:%-5d - flushed ", client->ip, client->port);
-      client_close (client);
-      return -1;
+      return 0;
     }
   else if (errno == EINTR)
     {
@@ -516,20 +550,25 @@ on_write ()
 
 
 int
-on_job_do (client_t * client)
+on_job_execute ()
 {
   int cgi_pipe, cgi_pid;
-  ssize_t handled_len;
   enum http_connection_state conn_state;
-  if (G.client_curr->has_undone_job || (fifo_len (client->recv_buf) == 0))
+  client_t * client;
+
+  client = G.client_curr;
+
+  if (client->has_job_undone || (fifo_len (client->recv_buf) == 0))
     return 0;
 
+  log(G.log, "DEBUG", "%s:%-5d - on_job_execute", client->ip, client->port);
+
   cgi_pipe = -1;
+  cgi_pid = -1;
   conn_state = http_handle_execute (client->http_handle,
-				    fifo_head (client->recv_buf),
-				    fifo_len (client->recv_buf),
-				    &handled_len,
-				    client->send_buf, &cgi_pipe, &cgi_pid);
+				    client->recv_buf,
+				    client->send_buf,
+                                    &cgi_pipe, &cgi_pid);
   switch (conn_state)
     {
     case HCS_CONNECTION_CLOSE_BAD_REQUEST:	/* no recv still flush send_buf */
@@ -539,14 +578,28 @@ on_job_do (client_t * client)
       }				/* fall through to flush close procedure */
     case HCS_CONNECTION_CLOSE_FINISHED:	/* no recv still flush send_buf */
       {
-	client->flush_close = true;
+	client->shut_down = true;
 	FD_CLR (client->sock_fd, &G.read_set);
+        log(G.log, "DEBUG", "%s:%-5d - no recv anymore (close finished)",
+            client->ip, client->port);
+
+	if (cgi_pipe >= 0)	/* got cgi pipe as response: dynamic content */
+	  {
+	    client->has_job_undone = true;
+	    client->cgi_pipe = cgi_pipe;
+	    client->cgi_pid = cgi_pid;
+	    FD_SET (cgi_pipe, &G.read_set);
+	    if (cgi_pipe > G.max_fd)
+	      G.max_fd = cgi_pipe;
+	  }
 	break;
       }
     case HCS_CONNECTION_CLOSE_INTERNAL_ERROR:	/* no recv, flush server defined res */
       {
 	log (G.log, "INFO", "%s:%-5d - internal error", client->ip,
 	     client->port);
+        log(G.log, "DEBUG", "%s:%-5d - no recv anymore (close internal error)",
+            client->ip, client->port);
 	FD_CLR (client->sock_fd, &G.read_set);	/* no recv but write to */
 	client->use_internal_error_buf = true;
 	client->internal_error_buf_ptr = SERVER_ERROR_MSG;
@@ -555,15 +608,9 @@ on_job_do (client_t * client)
       }
     case HCS_CONNECTION_ALIVE:
       {
-	if (fifo_out (client->recv_buf, handled_len) < 0)
-	  {
-	    log (G.log, "ERROR", "fifo_in error");
-	    client_close (client);
-	    return -1;
-	  }
 	if (cgi_pipe >= 0)	/* got cgi pipe as response: dynamic content */
 	  {
-	    client->has_undone_job = true;
+	    client->has_job_undone = true;
 	    client->cgi_pipe = cgi_pipe;
 	    client->cgi_pid = cgi_pid;
 	    FD_SET (cgi_pipe, &G.read_set);
@@ -581,14 +628,15 @@ on_job_do (client_t * client)
 int
 on_job_done (client_t *client)
 {
-      http_cgi_finish_callback (client->send_buf, client->pipe_buf);
-      fifo_out (client->pipe_buf, fifo_len (client->pipe_buf));
+  log(G.log, "DEBUG", "on_job_done: %d", client->port);
+  http_cgi_finish_callback (client->send_buf, client->pipe_buf);
+  fifo_out (client->pipe_buf, fifo_len (client->pipe_buf));
 
-      FD_CLR (client->cgi_pipe, &G.read_set);
-      close (client->cgi_pipe);
-      client->cgi_pipe = -1;
-      client->has_undone_job = false;
-      return 0;
+  FD_CLR (client->cgi_pipe, &G.read_set);
+  close (client->cgi_pipe);
+  client->cgi_pipe = -1;
+  client->has_job_undone = false;
+  return 0;
 }
 
 int
@@ -654,7 +702,7 @@ client_init (int client_sock, const char *client_ip,
     {
       client->ssl_context = NULL;
     }
-  client->has_undone_job = false;
+  client->has_job_undone = false;
   client->cgi_pipe = -1;
   client->cgi_pid = -1;
 
@@ -671,7 +719,7 @@ client_init (int client_sock, const char *client_ip,
   if (!client->send_buf)
     goto fifo_error;
 
-  client->flush_close = false;
+  client->shut_down = false;
   time (&client->last_activity);
 
   client->use_internal_error_buf = false;

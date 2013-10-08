@@ -6,24 +6,27 @@
 #include <stdarg.h>
 #include <string.h>
 
-#define LOG_MSG_BUF_SIZE 4096
+#define LOG_MSG_MAXLEN 0x4000
+#define LOG_TIMESTAMP_MAXLEN 100
 #define LOG_TIME_BUF_SIZE 30
+
+static char LOG_MSG_BUF[LOG_MSG_MAXLEN];
+static char LOG_TIMESTAMP_BUF[LOG_TIMESTAMP_MAXLEN];
 
 void
 _log (log_t * logger, const char *level, const char *fmt, ...)
 {
   va_list va_arg;
-  char log_msg[LOG_MSG_BUF_SIZE], time_string[LOG_TIME_BUF_SIZE];
   time_t now = time (0);
 
   if (logger)
     {
       va_start (va_arg, fmt);
-      strftime (time_string, LOG_TIME_BUF_SIZE, "%Y-%m-%d %H:%M:%S",
+      strftime (LOG_TIMESTAMP_BUF, LOG_TIME_BUF_SIZE, "%Y-%m-%d %H:%M:%S",
 		localtime (&now));
-      vsnprintf (log_msg, LOG_MSG_BUF_SIZE, fmt, va_arg);
-      fprintf (logger->log_file, "[%s] %-5s %s\n", time_string, level,
-	       log_msg);
+      vsnprintf (LOG_MSG_BUF, LOG_MSG_MAXLEN, fmt, va_arg);
+      fprintf (logger->log_file, "[%s] %-5s %s\n", LOG_TIMESTAMP_BUF, level,
+	       LOG_MSG_BUF);
       va_end (va_arg);
     }
 }

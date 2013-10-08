@@ -54,6 +54,7 @@ enum http_status
   SC_400_BAD_REQUEST,
   SC_403_FORBIDDEN,
   SC_404_NOT_FOUND,
+  SC_405_METHOD_NOT_ALLOWED,
   SC_411_LENGTH_REQUIRED,
   SC_413_REQUEST_ENTITY_TOO_LARGE,
   SC_414_REQUEST_URI_TOO_LONG,
@@ -162,10 +163,10 @@ http_handle_init (http_setting_t * setting);
 
 enum http_connection_state
 http_handle_execute (http_handle_t * hh,
-                      char *request, ssize_t req_len,
-                      ssize_t *handled_len,
+                      fifo_t * recv_buf,
                       fifo_t * send_buf,
-                      int *pipe_fd, pid_t * cgi_pid);
+                      int *pipe_fd,
+                      pid_t * cgi_pid);
 void
 http_handle_free (http_handle_t * hh);
 
