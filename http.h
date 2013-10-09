@@ -135,6 +135,7 @@ typedef struct
   const char *client_ip;
   unsigned short client_port;
   unsigned short server_port;
+  bool use_https;
   log_t *log;
 
   /* handle */
@@ -154,6 +155,7 @@ typedef struct
   const char *client_ip;
   unsigned short client_port;
   unsigned short server_port;
+  bool use_https;
 
   log_t *log;
 } http_setting_t;

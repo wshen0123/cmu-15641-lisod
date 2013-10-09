@@ -112,6 +112,7 @@ http_handle_init (http_setting_t * setting)
   hh->client_ip = setting->client_ip;
   hh->client_port = setting->client_port;
   hh->server_port = setting->server_port;
+  hh->use_https = setting->use_https;
   hh->log = setting->log;
 
   return hh;
@@ -792,9 +793,9 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
   envp[index++] = make_string (buf);
   snprintf (buf, MAXLEN, "SCRIPT_NAME=%s", script_name);
   envp[index++] = make_string (buf);
-  snprintf (buf, MAXLEN, "CONTENT_LENGTH=%zd", hh->request.content_length);
+  snprintf (buf, MAXLEN, "CONTENT_LENGTH=%zd",
+           (hh->request.content_length > 0 ? hh->request.content_length : (ssize_t) 0));
   envp[index++] = make_string (buf);
-
 
   switch (hh->request.method)
     {
@@ -810,6 +811,9 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
     default:
       break;
     }
+
+  if (hh->use_https)
+    envp[index++] = make_string("HTTPS=on");
 
   headers = hh->request.headers;
 

@@ -726,6 +726,7 @@ client_init (int client_sock, const char *client_ip,
   hh.client_ip = client->ip;
   hh.client_port = client_port;
   hh.server_port = server_port;
+  hh.use_https = (server_port == G.https_port ? true : false);
   hh.log = G.log;
 
   client->http_handle = http_handle_init (&hh);

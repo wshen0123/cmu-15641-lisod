@@ -1,7 +1,7 @@
 CC=gcc
 LIB=-lssl
 
-DEBUG?=0
+DEBUG?=1
 ifeq (${DEBUG}, 1)
     CFLAGS=-c -Wall -DDEBUG -g
     LDFLAGS=-Wall -g
