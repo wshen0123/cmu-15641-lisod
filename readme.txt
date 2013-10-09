@@ -55,3 +55,9 @@ response.
 
 5. In case of bad url like ones containing "..", lisod would generate bad request
 response.
+
+6. There is a issue with https schema. If the browser login flaskr with https
+method, the flaskr's login redirect url would be in http rather than https.
+But as the port number is still https_port, the server would decline http request
+failing at SSL_accept method. So add "HTTPS=on/off" for ENVP to CGI program
+to make it through https.
