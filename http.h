@@ -173,6 +173,6 @@ void
 http_handle_free (http_handle_t * hh);
 
 void
-http_cgi_finish_callback (fifo_t * send_buf, fifo_t * pipe_buf);
+http_cgi_2_http_response (fifo_t * send_buf, fifo_t * pipe_buf);
 
 #endif

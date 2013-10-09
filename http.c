@@ -63,9 +63,9 @@ const http_status_code_reason_phrase status_2_reason[] = {
   [SC_LAST] = {999, "Opps?!!! How do we get here :>=<:"},
 };
 
-enum http_uri_type check_uri_type (const char *uri);
-int parse_uri_static (http_handle_t * hh, char *file_path);
-int parse_uri_dynamic (http_handle_t * hh, char *path_info, char *request_uri,
+static enum http_uri_type parse_uri_type (const char *uri);
+static int parse_uri_static (http_handle_t * hh, char *file_path);
+static int parse_uri_dynamic (http_handle_t * hh, char *path_info, char *request_uri,
 		       char *query_string, char *script_name);
 
 static int http_do_response (http_handle_t * req, fifo_t * send_buf,
@@ -75,23 +75,23 @@ static int http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf,
 				     int *pipe_fd, int *pid);
 static int http_do_response_error (http_handle_t * hh, fifo_t * send_buf);
 
-ssize_t http_parser_execute (http_handle_t * h, char *request,
+static ssize_t http_parser_execute (http_handle_t * h, char *request,
 			     ssize_t req_len);
-enum http_status http_parser_requestline_callback (http_request_t * req,
+static enum http_status http_parser_request_line_callback (http_request_t * req,
 					      const char *buf);
-enum http_status http_parser_header_callback (http_request_t * req,
+static enum http_status http_parser_header_callback (http_request_t * req,
 					     const char *buf);
 
 static void http_handle_reset (http_handle_t * h);
-void http_parser_init (http_parser_t * parser);
-void http_parser_reset (http_parser_t * parser);
-void http_request_init (http_request_t * request);
-void http_request_reset (http_request_t * request);
+static void http_parser_init (http_parser_t * parser);
+static void http_parser_reset (http_parser_t * parser);
+static void http_request_init (http_request_t * request);
+static void http_request_reset (http_request_t * request);
 
-static void get_file_type (char *file_name, char *file_type);
-void build_envp (http_handle_t * hh, char *envp[], char *path_info,
+static void parse_file_type (char *file_name, char *file_type);
+static void build_envp (http_handle_t * hh, char *envp[], char *path_info,
 		 char *request_uri, char *query_string, char *script_name);
-char *make_string (const char *str);
+static char *string_new (const char *str);
 
 
 http_handle_t *
@@ -205,7 +205,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 {
   char c, *buf, *mbuf;
   const char *p, *pe;
-  size_t to_read, header_len, body_len, buf_index;
+  ssize_t to_read, header_len, body_len, buf_index;
   enum http_parser_state state;
   enum http_status status;
   http_parser_t *parser;
@@ -242,7 +242,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 	      break;
 	    }
 	  buf[buf_index] = '\0';
-	  status = http_parser_requestline_callback (&hh->request, buf);
+	  status = http_parser_request_line_callback (&hh->request, buf);
 	  if (ERROR_STATUS (status))
 	    state = S_DEAD;
 	  else
@@ -367,7 +367,7 @@ http_parser_execute (http_handle_t * hh, char *request, ssize_t req_len)
 
 
 enum http_status
-http_parser_requestline_callback (http_request_t * req, const char *request_line)
+http_parser_request_line_callback (http_request_t * req, const char *request_line)
 {
   char method[HTTP_HEADER_MAXLEN] = "";
   char uri[HTTP_HEADER_MAXLEN] = "";
@@ -375,7 +375,7 @@ http_parser_requestline_callback (http_request_t * req, const char *request_line
 
   sscanf (request_line, "%s %s %s", method, uri, version);
 
-  req->uri = make_string (uri);
+  req->uri = string_new (uri);
 
   if (!strcmp (method, "GET"))
     req->method = HM_GET;
@@ -423,8 +423,8 @@ http_parser_header_callback (http_request_t * req, const char *header_line)
 
   if (req->num_header < HTTP_MAX_HEADER_NUM)
     {
-      req->headers[req->num_header][HTTP_HEADER_NAME] = make_string (name);
-      req->headers[req->num_header][HTTP_HEADER_VALUE] = make_string (value);
+      req->headers[req->num_header][HTTP_HEADER_NAME] = string_new (name);
+      req->headers[req->num_header][HTTP_HEADER_VALUE] = string_new (value);
 
       req->num_header++;
 
@@ -507,7 +507,7 @@ http_do_response (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
   if (ERROR_STATUS (hh->status))
     return http_do_response_error (hh, send_buf);
 
-  uri_type = check_uri_type (hh->request.uri);
+  uri_type = parse_uri_type (hh->request.uri);
 
   switch (uri_type)
     {
@@ -539,9 +539,9 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
     "Content-length: %zd\r\n" "Content-type: %s\r\n\r\n";
 
   char buf[HTTP_HEADER_MAXLEN],
-    file_path[MAXLEN], file_type[MAXLEN], date[MAXLEN], *file_data, *p;
+    file_path[MAXLEN], file_type[MAXLEN], date[MAXLEN], *file_data;
   int file_fd;
-  size_t file_size;
+  ssize_t file_size;
   struct stat sbuf;
   time_t now;
   struct tm tm;
@@ -575,7 +575,7 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
     }
 
   file_size = sbuf.st_size;
-  get_file_type (file_path, file_type);
+  parse_file_type (file_path, file_type);
 
   snprintf (buf, HTTP_HEADER_MAXLEN, HTTP_RESPONSE_OK, date, file_size,
 	    file_type);
@@ -592,19 +592,13 @@ http_do_response_static (http_handle_t * hh, fifo_t * send_buf)
 	  hh->status = SC_500_SERVER_INTERNAL_ERROR;
 	  return http_do_response_error (hh, send_buf);
 	}
-      p = fifo_extend (send_buf, strlen (buf) + file_size);
-      if (!p)
-	return -1;
-      memcpy (p, buf, strlen (buf));
-      memcpy (p + strlen (buf), file_data, file_size);
+      fifo_in (send_buf, buf, strlen (buf));
+      fifo_in (send_buf, file_data, file_size);
       munmap (file_data, file_size);
     }
   else if (hh->request.method == HM_HEAD)
     {
-      p = fifo_extend (send_buf, strlen (buf));
-      if (!p)
-	return -1;
-      memcpy (p, buf, strlen (buf));
+      fifo_in (send_buf, buf, strlen (buf));
     }
   else
     {
@@ -632,7 +626,7 @@ http_do_response_error (http_handle_t * hh, fifo_t * send_buf)
 
   char res_buf[MAXLEN], html_buf[MAXLEN], date[MAXLEN], *reason;
   int code;
-  size_t content_length;
+  ssize_t content_length;
   time_t now;
   struct tm tm;
 
@@ -701,7 +695,7 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
       dup2 (stdout_pipe[1], fileno (stdout));
       dup2 (stdin_pipe[0], fileno (stdin));
 
-      ARGV[0] = make_string (hh->cgi_path);
+      ARGV[0] = string_new (hh->cgi_path);
       ARGV[1] = NULL;
 
       build_envp (hh, ENVP, path_info, request_uri, query_string,
@@ -710,7 +704,6 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
       if (execve (ARGV[0], ARGV, ENVP))
 	{
 	  log (hh->log, LL_ERROR, "execve: %s", strerror (errno));
-	  //TODO add do_http_response_error
 	  exit (EXIT_FAILURE);
 	}
     }
@@ -737,11 +730,13 @@ http_do_response_dynamic (http_handle_t * hh, fifo_t * send_buf, int *pipe_fd,
   return 0;
 }
 
+/* check cgi return Status header and write
+ * http_response_line + pipe_buf --> send_buf */
 void
-http_cgi_finish_callback (fifo_t * send_buf, fifo_t * pipe_buf)
+http_cgi_2_http_response (fifo_t * send_buf, fifo_t * pipe_buf)
 {
   static const char HTTP_RESPONSE_LINE[] = "HTTP/1.1 %d %s\r\n";
-  static const size_t STATUS_LINE_MINLEN = 11;
+  static const ssize_t STATUS_LINE_MINLEN = 11;
 
   int i, status_code;
   char *cp, *reason_phrase, response_line[MAXLEN];
@@ -777,43 +772,43 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
 
   index = 0;
 
-  envp[index++] = make_string ("GATEWAY_INTERFACE=CGI/1.1");
-  envp[index++] = make_string ("SERVER_PROTOCOL=HTTP/1.1");
-  envp[index++] = make_string ("SERVER_SOFTWARE=Lisod/1.0");
-  envp[index++] = make_string ("SERVER_NAME=Wayne Lisod");
+  envp[index++] = string_new ("GATEWAY_INTERFACE=CGI/1.1");
+  envp[index++] = string_new ("SERVER_PROTOCOL=HTTP/1.1");
+  envp[index++] = string_new ("SERVER_SOFTWARE=Lisod/1.0");
+  envp[index++] = string_new ("SERVER_NAME=Wayne Lisod");
   snprintf (buf, MAXLEN, "PATH_INFO=%s", path_info);
-  envp[index++] = make_string (buf);
+  envp[index++] = string_new (buf);
   snprintf (buf, MAXLEN, "REQUEST_URI=%s", request_uri);
-  envp[index++] = make_string (buf);
+  envp[index++] = string_new (buf);
   snprintf (buf, MAXLEN, "REMOTE_ADDR=%s", hh->client_ip);
-  envp[index++] = make_string (buf);
+  envp[index++] = string_new (buf);
   snprintf (buf, MAXLEN, "SERVER_PORT=%d", hh->server_port);
-  envp[index++] = make_string (buf);
+  envp[index++] = string_new (buf);
   snprintf (buf, MAXLEN, "QUERY_STRING=%s", query_string);
-  envp[index++] = make_string (buf);
+  envp[index++] = string_new (buf);
   snprintf (buf, MAXLEN, "SCRIPT_NAME=%s", script_name);
-  envp[index++] = make_string (buf);
+  envp[index++] = string_new (buf);
   snprintf (buf, MAXLEN, "CONTENT_LENGTH=%zd",
            (hh->request.content_length > 0 ? hh->request.content_length : (ssize_t) 0));
-  envp[index++] = make_string (buf);
+  envp[index++] = string_new (buf);
 
   switch (hh->request.method)
     {
     case HM_GET:
-      envp[index++] = make_string ("REQUEST_METHOD=GET");
+      envp[index++] = string_new ("REQUEST_METHOD=GET");
       break;
     case HM_POST:
-      envp[index++] = make_string ("REQUEST_METHOD=POST");
+      envp[index++] = string_new ("REQUEST_METHOD=POST");
       break;
     case HM_HEAD:
-      envp[index++] = make_string ("REQUEST_METHOD=HEAD");
+      envp[index++] = string_new ("REQUEST_METHOD=HEAD");
       break;
     default:
       break;
     }
 
   if (hh->use_https)
-    envp[index++] = make_string("HTTPS=on");
+    envp[index++] = string_new("HTTPS=on");
 
   headers = hh->request.headers;
 
@@ -823,59 +818,59 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
 	{
 	  snprintf (buf, MAXLEN, "CONTENT_TYPE=%s",
 		    headers[i][HTTP_HEADER_VALUE]);
-	  envp[index++] = make_string (buf);
+	  envp[index++] = string_new (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCEPT"))
 	{
 	  snprintf (buf, MAXLEN, "HTTP_ACCEPT=%s",
 		    headers[i][HTTP_HEADER_VALUE]);
-	  envp[index++] = make_string (buf);
+	  envp[index++] = string_new (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "REFERER"))
 	{
 	  snprintf (buf, MAXLEN, "HTTP_REFERER=%s",
 		    headers[i][HTTP_HEADER_VALUE]);
-	  envp[index++] = make_string (buf);
+	  envp[index++] = string_new (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCEPT-ENCODING"))
 	{
 	  snprintf (buf, MAXLEN, "HTTP_ACCEPT_ENCODING=%s",
 		    headers[i][HTTP_HEADER_VALUE]);
-	  envp[index++] = make_string (buf);
+	  envp[index++] = string_new (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCPET-LANGUAGE"))
 	{
 	  snprintf (buf, MAXLEN, "HTTP_ACCEPT_LANGUAGE=%s",
 		    headers[i][HTTP_HEADER_VALUE]);
-	  envp[index++] = make_string (buf);
+	  envp[index++] = string_new (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "ACCEPT-CHARSET"))
 	{
 	  snprintf (buf, MAXLEN, "HTTP_ACCEPT_CHARSET=%s",
 		    headers[i][HTTP_HEADER_VALUE]);
-	  envp[index++] = make_string (buf);
+	  envp[index++] = string_new (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "COOKIE"))
 	{
 	  snprintf (buf, MAXLEN, "HTTP_COOKIE=%s",
 		    headers[i][HTTP_HEADER_VALUE]);
-	  envp[index++] = make_string (buf);
+	  envp[index++] = string_new (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "USER-AGENT"))
 	{
 	  snprintf (buf, MAXLEN, "HTTP_USER_AGENT=%s",
 		    headers[i][HTTP_HEADER_VALUE]);
-	  envp[index++] = make_string (buf);
+	  envp[index++] = string_new (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "CONNECTION"))
 	{
-	  envp[index++] = make_string (buf);
+	  envp[index++] = string_new (buf);
 	}
       else if (!strcasecmp (headers[i][HTTP_HEADER_NAME], "HOST"))
 	{
 	  snprintf (buf, MAXLEN, "HTTP_HOST=%s",
 		    headers[i][HTTP_HEADER_VALUE]);
-	  envp[index++] = make_string (buf);
+	  envp[index++] = string_new (buf);
 	}
     }
   envp[index] = NULL;
@@ -883,7 +878,7 @@ build_envp (http_handle_t * hh, char *envp[], char *path_info,
 
 
 enum http_uri_type
-check_uri_type (const char *uri)
+parse_uri_type (const char *uri)
 {
   if (strstr (uri, ".."))
     return HTTP_URI_INVALID;
@@ -964,7 +959,7 @@ parse_uri_dynamic (http_handle_t * hh, char *path_info, char *request_uri,
 
 
 void
-get_file_type (char *file_name, char *file_type)
+parse_file_type (char *file_name, char *file_type)
 {
   if (strstr (file_name, ".html"))
     strcpy (file_type, "text/html");
@@ -974,11 +969,11 @@ get_file_type (char *file_name, char *file_type)
     strcpy (file_type, "image/jpeg");
   else
     strcpy (file_type, "text/plain");
-}				/* end of get_file_type */
+}				/* end of parse_file_type */
 
 
 char *
-make_string (const char *str)
+string_new (const char *str)
 {
   int len = strlen (str) + 1;
   char *newstr = (char *) malloc (len);

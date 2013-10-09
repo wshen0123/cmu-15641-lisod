@@ -46,6 +46,9 @@ static const char SERVER_ERROR_MSG[] =
   "have caused the error.</p><hr><address>Lisod 1.0</address></body></html>";
 static const ssize_t SERVER_ERROR_MSG_LEN = sizeof (SERVER_ERROR_MSG) - 1;
 
+/* We can pass G around but since there is only single instance I made it gloabl */
+static struct global_var G;
+
 
 static int lisod_setup (char *cmd, char *http_port, char *https_port,
 			char *log_file_path, char *lock_file_fd_path,
@@ -61,8 +64,8 @@ static void on_ready ();
 static int on_read_sock ();
 static int on_read_pipe ();
 static int on_write ();
-int on_http_execute ();
-int on_cgi_job_done (client_t * client);
+static int on_http_execute ();
+static int on_cgi_job_done (client_t * client);
 
 static client_t *client_init (int client_sock, const char *client_ip,
 			      unsigned short client_port,
@@ -80,8 +83,8 @@ static int open_listen_sock (char *port);
 static int close_sock (int sock);
 
 static void daemonize (const char *cmd);
-static int already_running ();
-bool check_flushed (client_t * client);
+static bool already_running ();
+static bool check_flushed (client_t * client);
 static void check_timeout (int sig);
 
 static int
@@ -210,7 +213,6 @@ lisod_run ()
 void
 lisod_signal_handler (int sig)
 {
-
   if (sig == SIGTERM || sig == SIGINT)
     {
       lisod_exit ();
@@ -247,6 +249,7 @@ lisod_exit ()
   exit (EXIT_SUCCESS);
 }
 
+/* reap child process and check their exit status */
 void
 on_SIGCHLD ()
 {
@@ -258,6 +261,9 @@ on_SIGCHLD ()
       pid = waitpid (-1, &status, 0);
       if (WIFEXITED (status) && (WEXITSTATUS (status) == EXIT_SUCCESS))
 	continue;
+      
+      /* if CGI exited abnormally, echo error msg, close connection */
+
       client = client_find_by_cgi_pid (pid);
       if (client)
 	{
@@ -493,40 +499,33 @@ on_write ()
 
   time (&client->last_activity);
 
-  if (!client->use_internal_error_buf)
-    {
-
-      if (client->ssl_context)
-	writeret =
-	  SSL_write (client->ssl_context, fifo_head (client->send_buf),
-		     fifo_len (client->send_buf));
-      else
-	writeret = send (client->sock_fd, fifo_head (client->send_buf),
-			 fifo_len (client->send_buf), MSG_NOSIGNAL);
-    }
-  else
+  if (client->use_internal_error_buf)
     {
       writeret = send (client->sock_fd, client->internal_error_buf_ptr,
 		       client->internal_error_buf_to_write_len, MSG_NOSIGNAL);
     }
+  else
+    {
+
+      if (client->ssl_context)
+	writeret = SSL_write (client->ssl_context, fifo_head (client->send_buf),
+                              fifo_len (client->send_buf));
+      else
+	writeret = send (client->sock_fd, fifo_head (client->send_buf),
+			 fifo_len (client->send_buf), MSG_NOSIGNAL);
+    }
 
   if (writeret >= 0)
     {
-      if (!client->use_internal_error_buf)
+      if (client->use_internal_error_buf)
 	{
-#ifdef DEBUG
-	  memcpy (DEBUG_BUF, fifo_head (client->send_buf), writeret);
-	  DEBUG_BUF[writeret] = '\0';
-	  log (G.log, LL_DEBUG, "%s:%-5d - on_write: \n%s", client->ip,
-	       client->port, DEBUG_BUF);
-#endif
-	  fifo_out (client->send_buf, writeret);
+	  client->internal_error_buf_ptr += writeret;
+	  client->internal_error_buf_to_write_len -= writeret;
 	  return 0;
 	}
       else
 	{
-	  client->internal_error_buf_ptr += writeret;
-	  client->internal_error_buf_to_write_len -= writeret;
+	  fifo_out (client->send_buf, writeret);
 	  return 0;
 	}
       return 0;
@@ -545,6 +544,10 @@ on_write ()
 }				/* end of on_write */
 
 
+/* let http module do with recv_buf and write response to send_buf or return
+ * with a cgi_pipe with cgi_pid for on_write() to read into pipe_buf.
+ * It also checks http module's return as connection_state parsed from header
+ * or determined by parsing routine(e.g. bad request). */
 int
 on_http_execute ()
 {
@@ -570,16 +573,18 @@ on_http_execute ()
       {
 	log (G.log, LL_INFO, "%s:%-5d - bad request, will close",
 	     client->ip, client->port);
+
 	client->shut_down = true;
 	FD_CLR (client->sock_fd, &G.read_set);
         break;
       }				/* fall through to flush close procedure */
     case HCS_CONNECTION_CLOSE_FINISHED:	
       {
-	client->shut_down = true;
-	FD_CLR (client->sock_fd, &G.read_set);
 	log (G.log, LL_INFO, "%s:%-5d - connection: close",
 	     client->ip, client->port);
+
+	client->shut_down = true;
+	FD_CLR (client->sock_fd, &G.read_set);
 
 	if (cgi_pipe >= 0)
 	  {
@@ -621,12 +626,15 @@ on_http_execute ()
   return 0;
 }
 
+/* removes cgi_pipe and translate CGI Status to HTTP response line */
 int
 on_cgi_job_done (client_t * client)
 {
   log (G.log, LL_DEBUG, "on_cgi_job_done: %d", client->port);
-  http_cgi_finish_callback (client->send_buf, client->pipe_buf);
-  fifo_out (client->pipe_buf, fifo_len (client->pipe_buf));
+
+  /* tranlate CGI response into http response */
+  http_cgi_2_http_response (client->send_buf, client->pipe_buf);
+  fifo_flush (client->pipe_buf);
 
   FD_CLR (client->cgi_pipe, &G.read_set);
   close (client->cgi_pipe);
@@ -635,6 +643,7 @@ on_cgi_job_done (client_t * client)
   return 0;
 }
 
+/* add client to lisod client pool */
 int
 client_add (client_t * client)
 {
@@ -759,6 +768,7 @@ client_find_by_cgi_pid (pid_t pid)
   return NULL;
 }
 
+/* clean up all client resources:fd, SSL, buffer */
 void
 client_close (client_t * client)
 {
@@ -790,6 +800,7 @@ client_close (client_t * client)
   free (client);
 }				/* end of client_new & client_exit */
 
+/* daemonize code referred from APUE chapter 13 */
 void
 daemonize (const char *cmd)
 {
@@ -860,7 +871,8 @@ daemonize (const char *cmd)
 #endif
 }				/* end of daemonize */
 
-int
+/* checks if daemon already running */
+bool
 already_running ()
 {
 #ifndef DEBUG
@@ -870,21 +882,14 @@ already_running ()
   if (G.lock_file_fd < 0)
     {
       fprintf (stderr, "Error: cannot create lock file\n");
-      return -1;
+      return true;
     }
 #endif
 
-  return 0;
+  return false;
 }				/* end of already_running */
 
-/**
- * @brief       wrapper for signal function
- *
- * @param       signum
- * @param       handler
- *
- * @return      
- */
+/* signal handler resigter wrapper */
 handler_t *
 Signal (int signum, handler_t * handler)
 {
@@ -902,10 +907,11 @@ Signal (int signum, handler_t * handler)
   return (old_action.sa_handler);
 }
 
+/* check if client if shutdown and all response is flushed
+ * then we can safely close the client socket */
 bool
 check_flushed (client_t * client)
 {
-
   if (client->shut_down && !client->has_job_undone)
     {
       if (client->use_internal_error_buf
@@ -918,6 +924,8 @@ check_flushed (client_t * client)
   return false;
 }
 
+/* called by lisod_signal_handler on SIGALRM every TIMEOUTs
+ * clean timedout client */
 void
 check_timeout (int sig)
 {

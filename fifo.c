@@ -137,39 +137,6 @@ fifo_flush (fifo_t * fifo)
   fifo_out (fifo, fifo_len (fifo));
 }
 
-char *
-fifo_extend (fifo_t * fifo, ssize_t ext_len)
-{
-  char *bytes_temp;
-  ssize_t size_temp;
-
-  if (ext_len > 0)
-    {
-      if (fifo->size < fifo->len + ext_len)
-	{
-	  size_temp =
-	    ((ext_len + fifo->len) / FIFO_BLOCKLEN + 1) * FIFO_BLOCKLEN;
-
-	  bytes_temp = malloc (size_temp);
-	  if (!bytes_temp)
-	    return NULL;
-
-	  memcpy (bytes_temp, fifo->bytes, fifo->len);
-	  free (fifo->bytes);
-	  fifo->bytes = bytes_temp;
-	  bytes_temp += fifo->len;
-	  fifo->len += ext_len;
-	  fifo->size = size_temp;
-	}
-      else
-	{
-	  bytes_temp = fifo->bytes + fifo->len;
-	  fifo->len += ext_len;
-	}
-      return bytes_temp;
-    }
-  return NULL;
-}
 
 void
 fifo_free (fifo_t * fifo)

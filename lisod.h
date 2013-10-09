@@ -77,6 +77,6 @@ struct global_var
   client_t *client_curr;
   client_t *clients[FD_SETSIZE];
   int maxi;			/* highwater index into client array */
-} G;
+};
 
 #endif
